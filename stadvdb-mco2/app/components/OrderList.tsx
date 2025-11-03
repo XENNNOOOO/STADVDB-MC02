@@ -1,5 +1,8 @@
 'use client';
+
 import { useState } from 'react';
+import Link from 'next/link';
+import { Pencil, Trash2 } from 'lucide-react';
 import OrderFilter from './OrderFilter';
 import { Order } from '@/app/page';
 
@@ -13,31 +16,41 @@ export default function OrderList({ orders }: { orders: Order[] }) {
     return true;
   });
 
-  const getNodeLabel = (date: string) => {
-    const year = parseInt(date.slice(0, 4));
-    if (year >= 2025) return "Node 1";
-    if (year <= 2024) return "Node 2";
-    return "Node 0";
-  };
-
   return (
     <div>
       <OrderFilter selected={filter} onChange={setFilter} />
 
-      <table className="w-full border mt-4">
-        <thead className="bg-gray-100">
-          <tr>
-            <th className="border px-2 py-1">Order #</th>
-            <th className="border px-2 py-1">Customer</th>
-            <th className="border px-2 py-1">Order Date</th>
+      <table className="w-full mt-4 border-collapse">
+        <thead>
+          <tr className="bg-gray-100 text-left text-sm text-gray-600">
+            <th className="px-3 py-2 border-b">Order #</th>
+            <th className="px-3 py-2 border-b">Customer</th>
+            <th className="px-3 py-2 border-b">Order Date</th>
+            <th className="px-3 py-2 border-b w-12"></th>
           </tr>
         </thead>
+
         <tbody>
           {filteredOrders.map((order) => (
-            <tr key={order.ORDER_NUMBER}>
-              <td className="border px-2 py-1">{order.ORDER_NUMBER}</td>
-              <td className="border px-2 py-1">{order.CUSTOMER_NUMBER}</td>
-              <td className="border px-2 py-1">{order.ORDER_DATE}</td>
+            <tr key={order.ORDER_NUMBER} className="hover:bg-gray-50 transition">
+              <td className="px-3 py-2 border-b">{order.ORDER_NUMBER}</td>
+              <td className="px-3 py-2 border-b">{order.CUSTOMER_NUMBER}</td>
+              <td className="px-3 py-2 border-b">{order.ORDER_DATE}</td>
+
+              {/* Right aligned small actions */}
+              <td className="px-3 py-2 border-b text-right">
+                <div className="flex justify-end gap-3 opacity-70 hover:opacity-100 transition">
+
+                  <Link href={`/orders/${order.ORDER_NUMBER}`}>
+                    <Pencil size={18} className="cursor-pointer hover:text-blue-600" />
+                  </Link>
+
+                  <Link href={`/orders/${order.ORDER_NUMBER}/delete`}>
+                    <Trash2 size={18} className="cursor-pointer hover:text-red-600" />
+                  </Link>
+
+                </div>
+              </td>
             </tr>
           ))}
         </tbody>
