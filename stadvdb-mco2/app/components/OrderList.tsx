@@ -30,7 +30,6 @@ export default function OrderList({ orders }: { orders: Order[] }) {
             <th className="border px-2 py-1">Order #</th>
             <th className="border px-2 py-1">Customer</th>
             <th className="border px-2 py-1">Order Date</th>
-            <th className="border px-2 py-1">Node</th>
           </tr>
         </thead>
         <tbody>
@@ -39,11 +38,6 @@ export default function OrderList({ orders }: { orders: Order[] }) {
               <td className="border px-2 py-1">{order.ORDER_NUMBER}</td>
               <td className="border px-2 py-1">{order.CUSTOMER_NUMBER}</td>
               <td className="border px-2 py-1">{order.ORDER_DATE}</td>
-              <td className="border px-2 py-1">
-                <span className="px-2 py-1 bg-gray-200 rounded text-xs">
-                  {getNodeLabel(order.ORDER_DATE)}
-                </span>
-              </td>
             </tr>
           ))}
         </tbody>
