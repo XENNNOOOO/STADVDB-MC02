@@ -1,0 +1,11 @@
+/* File path: app/globals.css */
+
+/* This is the correct Tailwind v4 syntax */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+body {
+  @apply bg-gray-50 text-gray-900;
+}
