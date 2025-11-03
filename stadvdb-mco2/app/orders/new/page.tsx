@@ -1,4 +1,3 @@
-// File path: app/orders/new/page.tsx
 import OrderForm from '@/app/components/OrderForm';
 
 export default function NewOrderPage() {

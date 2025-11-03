@@ -1,5 +1,4 @@
-// File path: app/orders/[id]/page.tsx
-'use client'; // This page uses a hook (useParams)
+'use client'; 
 
 import OrderForm from '@/app/components/OrderForm';
 import { useParams } from 'next/navigation';

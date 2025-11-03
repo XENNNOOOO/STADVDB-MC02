@@ -1,8 +1,7 @@
-// File path: app/components/Navbar.tsx
 'use client';
 
 import Link from 'next/link';
-import { Package } from 'lucide-react'; // This will now work
+import { Package } from 'lucide-react'; 
 import { usePathname } from 'next/navigation';
 
 export default function Navbar() {

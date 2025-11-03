@@ -1,5 +1,4 @@
-// File path: app/components/OrderForm.tsx
-'use client'; // This is a client component (it's a form)
+'use client'; 
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -11,7 +10,7 @@ interface Product {
   UNIT_PRICE: number;
 }
 
-// UI-ONLY: Static mock data for the product dropdown
+// Static mock data for the product dropdown
 const MOCK_PRODUCTS: Product[] = [
   { PRODUCT_NUMBER: 'P-101', PRODUCT_NAME: 'TrailMaster Tent', UNIT_PRICE: 15000 },
   { PRODUCT_NUMBER: 'P-102', PRODUCT_NAME: 'TrekPro Backpack', UNIT_PRICE: 7500 },
@@ -27,8 +26,8 @@ interface OrderFormData {
 
 // Define the component's props
 interface OrderFormProps {
-  initialData?: OrderFormData; // Optional data for editing
-  isEditMode: boolean; // Flag to change text (Create vs. Save)
+  initialData?: OrderFormData; 
+  isEditMode: boolean;
 }
 
 export default function OrderForm({ initialData, isEditMode }: OrderFormProps) {
@@ -41,7 +40,7 @@ export default function OrderForm({ initialData, isEditMode }: OrderFormProps) {
     }
   );
   
-  // UI-ONLY: We just use the mock data immediately
+  // UI-ONLY
   const products = MOCK_PRODUCTS;
 
   const handleItemChange = (index: number, field: string, value: string) => {
@@ -64,7 +63,7 @@ export default function OrderForm({ initialData, isEditMode }: OrderFormProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // UI-ONLY: We just show an alert and go back to the homepage
+    // UI-ONLY
     const action = isEditMode ? 'updated' : 'created';
     alert(`UI-ONLY: Order ${action} successfully!\n` + JSON.stringify(formData, null, 2));
     router.push('/'); // Go back to the main list

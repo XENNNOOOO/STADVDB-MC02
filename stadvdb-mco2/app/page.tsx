@@ -1,7 +1,6 @@
-// File path: app/page.tsx
 import OrderList from '@/app/components/OrderList';
 
-// This is the mock data type for your orders
+// mock data type for  orders
 export interface Order {
   ORDER_NUMBER: string;
   CUSTOMER_NUMBER: string;
@@ -9,7 +8,7 @@ export interface Order {
   TOTAL_AMOUNT: number;
 }
 
-// UI-ONLY: We use static mock data to build the UI
+// UI-ONLY
 const MOCK_ORDERS: Order[] = [
   { ORDER_NUMBER: 'L-1001', CUSTOMER_NUMBER: 'CUST-L1', ORDER_DATE: '2025-10-01', TOTAL_AMOUNT: 500.00 },
   { ORDER_NUMBER: 'L-1002', CUSTOMER_NUMBER: 'CUST-L2', ORDER_DATE: '2025-10-02', TOTAL_AMOUNT: 750.00 },
@@ -18,7 +17,6 @@ const MOCK_ORDERS: Order[] = [
 ];
 
 export default function Home() {
-  // This page is now very simple. It just shows the list of mock orders.
   return (
     <div>
       <h1 className="text-3xl font-bold mb-6">Order Management</h1>
