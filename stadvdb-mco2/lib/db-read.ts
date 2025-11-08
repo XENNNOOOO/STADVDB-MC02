@@ -1,0 +1,154 @@
+import { getConnection } from './connections';
+import type { Order, Product } from './types';
+
+// node types
+type Node = 'central' | 'node1' | 'node2';
+
+/**
+ * READ (All Orders for a Year)
+ * 3-step failover logic for Reads.
+ */
+export const getOrders = async (year: '2024' | '2025'): Promise<Order[]> => {
+  // Read Path
+  const readPath: Node[] =
+    year === '2025'
+      ? ['node1', 'central', 'node2']   // Node 1 (Primary) -> Node 0 (Master) -> Node 2 (Backup)
+      : ['node2', 'central', 'node1'];  // Node 2 (Primary) -> Node 0 (Master) -> Node 1 (Backup)
+
+  let connection;
+  
+  // loop through the path until one succeeds
+  for (const node of readPath) {
+    try {
+      console.log(`READ [${year}]: Trying Node ${node}...`);
+      connection = await getConnection(node);
+      
+      // concurrency: fast - read uncommitted
+      await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
+      
+      // query works on all 3 nodes
+      const [rows] = await connection.execute(
+        `SELECT ORDER_NUMBER, CUSTOMER_NUMBER, ORDER_DATE, DELIVERY_DATE, TOTAL_AMOUNT 
+         FROM ORDER_HEADER WHERE YEAR(DELIVERY_DATE) = ?`,
+        [year]
+      );
+      
+      await connection.end();
+      console.log(`READ [${year}]: Success on Node ${node}.`);
+      return rows as Order[];
+    
+    } catch (err: any) {
+      console.warn(`READ: Node ${node} failed. (${err.message}). Failing over...`);
+      if (connection) await connection.end();
+      // loop continues to the next node
+    }
+  }
+
+  // if all 3 nodes in the path have failed
+  throw new Error(`All nodes for ${year} data are unavailable.`);
+};
+
+/**
+ * READ (Single Order)
+ * takes the 'year' as a signal from the API 
+ * directed 3-step failover path.
+ */
+export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<Order | null> => {
+  
+  //  3-step failover path based on the signal (year)
+  const readPath: Node[] =
+    year === '2025'
+      ? ['node1', 'central', 'node2']   // 2025 Path
+      : ['node2', 'central', 'node1'];  // 2024 Path
+  
+  let connection;
+  
+  // loop through the chosen path
+  for (const node of readPath) {
+    try {
+      console.log(`READ [${id}]: Trying Node ${node}...`);
+      connection = await getConnection(node);
+      
+      // concurrency: read committed to prevent dirty reads
+      await connection.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED;');
+      
+      const [rows] = await connection.execute(
+        `SELECT * FROM ORDER_HEADER WHERE ORDER_NUMBER = ?`,
+        [id]
+      );
+      
+      await connection.end();
+      
+      const order = (rows as Order[])[0] || null;
+      
+      // ff we found the order on this node, return it
+      if (order) {
+        console.log(`READ [${id}]: Found on Node ${node}.`);
+        return order;
+      }
+      
+      // if order is not found, try the next node
+      
+    } catch (err: any) {
+      // this node is down. log it and continue to the next one.
+      console.warn(`READ: Node ${node} failed. (${err.message}). skipping...`);
+      if (connection) await connection.end();
+    }
+  }
+
+  // if we searched all 3 nodes (online) and didn't find it
+  throw new Error(`Order ${id} not found on any available node.`);
+};
+
+/**
+ * READ (Products)
+ * tries the local nodes first, before failing over
+ */
+export const getProducts = async (year: '2024' | '2025'): Promise<Product[]> => {
+  
+  // determine the most efficient read path based on the user's context
+
+  const readPath: Node[] =
+    year === '2025'
+      ? ['node1', 'central', 'node2']   // Try Node 1 first then failover if needed
+      : ['node2', 'central', 'node1'];  // Try Node 2 first
+  
+  let connection;
+
+  // loop through the path until one succeeds
+  for (const node of readPath) {
+    try {
+      console.log(`READ [Products, context=${year}]: Trying Node ${node}...`);
+      connection = await getConnection(node);
+      await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
+      
+      const [rows] = await connection.execute('SELECT PRODUCT_NUMBER, PRODUCT_NAME, UNIT_PRICE FROM PRODUCT');
+      
+      await connection.end();
+      console.log(`READ [Products]: Success on Node ${node}.`);
+      return rows as Product[]; 
+    
+    } catch (err: any) {
+      console.warn(`READ [Products]: Node ${node} failed. (${err.message}). Failing over...`);
+      if (connection) await connection.end();
+      // Loop continues to the next node
+    }
+  }
+  
+  // if all 3 nodes failed
+  throw new Error(`All nodes are unavailable. Cannot fetch products.`);
+};
+
+/**
+ * READ (Products from Master)
+ * non-failover read used only by the recovery (pending_logs) script.
+ */
+export const getProductsFromMaster = async (connection: Connection): Promise<Product[]> => {
+  try {
+    await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
+    const [rows] = await connection.execute('SELECT PRODUCT_NUMBER, PRODUCT_NAME, UNIT_PRICE FROM PRODUCT');
+    return rows as Product[];
+  } catch (err: any) {
+    throw new Error(`Failed to get products from master: ${err.message}`);
+  }
+};
