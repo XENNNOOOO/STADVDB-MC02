@@ -20,7 +20,6 @@ const MOCK_PRODUCTS: Product[] = [
 // Define the shape of the form data
 interface OrderFormData {
   customerNumber: string;
-  salesStaffCode: string;
   items: { productNumber: string; quantity: number }[];
 }
 
@@ -35,7 +34,6 @@ export default function OrderForm({ initialData, isEditMode }: OrderFormProps) {
   const [formData, setFormData] = useState<OrderFormData>(
     initialData || {
       customerNumber: '',
-      salesStaffCode: '',
       items: [{ productNumber: '', quantity: 1 }],
     }
   );
@@ -83,19 +81,6 @@ export default function OrderForm({ initialData, isEditMode }: OrderFormProps) {
             id="customerNumber"
             value={formData.customerNumber}
             onChange={(e) => setFormData({ ...formData, customerNumber: e.target.value })}
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"
-            required
-          />
-        </div>
-        <div>
-          <label htmlFor="salesStaffCode" className="block text-sm font-medium text-gray-700">
-            Sales Staff Code
-          </label>
-          <input
-            type="text"
-            id="salesStaffCode"
-            value={formData.salesStaffCode}
-            onChange={(e) => setFormData({ ...formData, salesStaffCode: e.target.value })}
             className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm"
             required
           />
