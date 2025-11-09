@@ -1,50 +1,68 @@
-import mysql from 'mysql2/promise';
+import { Pool, PoolConfig } from 'pg';
 
 // Connection Configs
 
-// TODO: Update with the actual DB credentials
+// TODO: Update with the actual DB credentials @Luwes6174 @leebrien
 // Node 0 (Server 0) - Master, All Data
-const node0_Central_Config: mysql.ConnectionOptions = {
+const node0_Central_Config: PoolConfig = {
   host: '127.0.0.1', 
-  port: 3306,
+  port: 5432,     
   user: 'webapp_user',
   password: 'password',
   database: 'go_sales_all', 
-  connectTimeout: 3000, 
+  connectionTimeoutMillis: 3000, 
+  max: 10, 
+  idleTimeoutMillis: 30000, // How long a client is allowed to remain idle
 };
 
 // TODO: Update with the actual DB credentials
 // Node 1 (Server 1) - 2025 (Primary) + 2024 (Backup)
-const node1_Config: mysql.ConnectionOptions = {
+const node1_Config: PoolConfig = {
   host: '192.168.1.11', 
-  port: 3306,
+  port: 5432, 
   user: 'webapp_user',
   password: 'password',
   database: 'go_sales_node1', 
-  connectTimeout: 3000,
+  connectionTimeoutMillis: 3000,
+  max: 10,
+  idleTimeoutMillis: 30000,
 };
 
 // Node 2 (Server 2) - 2024 (Primary) + 2025 (Backup)
-const node2_Config: mysql.ConnectionOptions = {
+const node2_Config: PoolConfig = {
   host: '192.168.1.12', 
-  port: 3306,
+  port: 5432,
   user: 'webapp_user',
   password: 'password',
   database: 'go_sales_node2', 
-  connectTimeout: 3000,
+  connectionTimeoutMillis: 3000,
+  max: 10,
+  idleTimeoutMillis: 30000,
 };
 
+// Connection Pools 
+// get a "client" from the pool for each transaction.
+const pool0 = new Pool(node0_Central_Config);
+const pool1 = new Pool(node1_Config);
+const pool2 = new Pool(node2_Config);
+
+// log any pool errors
+pool0.on('error', (err) => console.error('Node 0 Pool Error:', err.message));
+pool1.on('error', (err) => console.error('Node 1 Pool Error:', err.message));
+pool2.on('error', (err) => console.error('Node 2 Pool Error:', err.message));
+
+
 /**
- * Creates a single, one-time connection to the specified node.
- * We use createConnection (not a pool) to make it possible
- * to catch and demonstrate connection failures for MCO2.
+ * Returns the connection POOL for the specified node.
+ * The calling function will then get a CLIENT from this pool
+ * by calling `pool.connect()`.
  */
-export const getConnection = (node: 'central' | 'node1' | 'node2') => {
+export const getPool = (node: 'central' | 'node1' | 'node2'): Pool => {
   if (node === 'node1') {
-    return mysql.createConnection(node1_Config);
+    return pool1;
   }
   if (node === 'node2') {
-    return mysql.createConnection(node2_Config);
+    return pool2;
   }
-  return mysql.createConnection(node0_Central_Config);
+  return pool0;
 };

@@ -1,46 +1,46 @@
-import { getConnection } from './connections';
-import type { Order, Product } from './types';
-
-// node types
-type Node = 'central' | 'node1' | 'node2';
+import { getPool } from './connections';
+import type { Order, Product, NodeName } from './types';
+import type { PoolClient } from 'pg';
 
 /**
  * READ (All Orders for a Year)
  * 3-step failover logic for Reads.
  */
-export const getOrders = async (year: '2024' | '2025'): Promise<Order[]> => {
-  // Read Path
-  const readPath: Node[] =
+export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> => {
+  // read Path
+  const readPath: NodeName[] =
     year === '2025'
       ? ['node1', 'central', 'node2']   // Node 1 (Primary) -> Node 0 (Master) -> Node 2 (Backup)
       : ['node2', 'central', 'node1'];  // Node 2 (Primary) -> Node 0 (Master) -> Node 1 (Backup)
 
-  let connection;
+  let client: PoolClient | undefined;
   
   // loop through the path until one succeeds
   for (const node of readPath) {
     try {
       console.log(`READ [${year}]: Trying Node ${node}...`);
-      connection = await getConnection(node);
+      const pool = getPool(node);
+      client = await pool.connect();
       
       // concurrency: fast - read uncommitted
-      await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
+      await client.query('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
       
       // query works on all 3 nodes
-      const [rows] = await connection.execute(
+      // Use $1, $2... for PostgreSQL again
+      const { rows } = await client.query(
         `SELECT ORDER_NUMBER, CUSTOMER_NUMBER, ORDER_DATE, DELIVERY_DATE, TOTAL_AMOUNT 
-         FROM ORDER_HEADER WHERE YEAR(DELIVERY_DATE) = ?`,
+         FROM ORDER_HEADER WHERE EXTRACT(YEAR FROM DELIVERY_DATE) = $1`,
         [year]
       );
       
-      await connection.end();
       console.log(`READ [${year}]: Success on Node ${node}.`);
       return rows as Order[];
     
     } catch (err: any) {
       console.warn(`READ: Node ${node} failed. (${err.message}). Failing over...`);
-      if (connection) await connection.end();
       // loop continues to the next node
+    } finally {
+      if (client) client.release(); 
     }
   }
 
@@ -55,30 +55,29 @@ export const getOrders = async (year: '2024' | '2025'): Promise<Order[]> => {
  */
 export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<Order | null> => {
   
-  //  3-step failover path based on the signal (year)
-  const readPath: Node[] =
+  //  3-step failover path based on year
+  const readPath: NodeName[] =
     year === '2025'
       ? ['node1', 'central', 'node2']   // 2025 Path
       : ['node2', 'central', 'node1'];  // 2024 Path
   
-  let connection;
+  let client: PoolClient | undefined;
   
   // loop through the chosen path
   for (const node of readPath) {
     try {
       console.log(`READ [${id}]: Trying Node ${node}...`);
-      connection = await getConnection(node);
+      const pool = getPool(node);
+      client = await pool.connect();
       
       // concurrency: read committed to prevent dirty reads
-      await connection.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED;');
+      await client.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED;');
       
-      const [rows] = await connection.execute(
-        `SELECT * FROM ORDER_HEADER WHERE ORDER_NUMBER = ?`,
+      const { rows } = await client.query(
+        `SELECT * FROM ORDER_HEADER WHERE ORDER_NUMBER = $1`,
         [id]
       );
-      
-      await connection.end();
-      
+            
       const order = (rows as Order[])[0] || null;
       
       // ff we found the order on this node, return it
@@ -92,12 +91,14 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<O
     } catch (err: any) {
       // this node is down. log it and continue to the next one.
       console.warn(`READ: Node ${node} failed. (${err.message}). skipping...`);
-      if (connection) await connection.end();
+    } finally {
+      if (client) client.release(); // Always release the client
     }
   }
 
   // if we searched all 3 nodes (online) and didn't find it
-  throw new Error(`Order ${id} not found on any available node.`);
+  console.error(`Order ${id} not found on any available node.`);
+  return null;
 };
 
 /**
@@ -107,31 +108,31 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<O
 export const getProducts = async (year: '2024' | '2025'): Promise<Product[]> => {
   
   // determine the most efficient read path based on the user's context
-
-  const readPath: Node[] =
+  const readPath: NodeName[] =
     year === '2025'
       ? ['node1', 'central', 'node2']   // Try Node 1 first then failover if needed
       : ['node2', 'central', 'node1'];  // Try Node 2 first
   
-  let connection;
+  let client: PoolClient | undefined;
 
   // loop through the path until one succeeds
   for (const node of readPath) {
     try {
       console.log(`READ [Products, context=${year}]: Trying Node ${node}...`);
-      connection = await getConnection(node);
-      await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
+      const pool = getPool(node);
+      client = await pool.connect();
+      await client.query('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
       
-      const [rows] = await connection.execute('SELECT PRODUCT_NUMBER, PRODUCT_NAME, UNIT_PRICE FROM PRODUCT');
+      const { rows } = await client.query('SELECT PRODUCT_NUMBER, PRODUCT_NAME, UNIT_PRICE FROM PRODUCT');
       
-      await connection.end();
       console.log(`READ [Products]: Success on Node ${node}.`);
       return rows as Product[]; 
     
     } catch (err: any) {
       console.warn(`READ [Products]: Node ${node} failed. (${err.message}). Failing over...`);
-      if (connection) await connection.end();
-      // Loop continues to the next node
+      // loop continues to the next node
+    } finally {
+      if (client) client.release();
     }
   }
   
@@ -143,12 +144,14 @@ export const getProducts = async (year: '2024' | '2025'): Promise<Product[]> => 
  * READ (Products from Master)
  * non-failover read used only by the recovery (pending_logs) script.
  */
-export const getProductsFromMaster = async (connection: Connection): Promise<Product[]> => {
+export const getProductsFromMaster = async (client: PoolClient): Promise<Product[]> => {
+  // reuses the client connection from the recovery script
   try {
-    await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
-    const [rows] = await connection.execute('SELECT PRODUCT_NUMBER, PRODUCT_NAME, UNIT_PRICE FROM PRODUCT');
+    await client.query('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
+    const { rows } = await client.query('SELECT PRODUCT_NUMBER, PRODUCT_NAME, UNIT_PRICE FROM PRODUCT');
     return rows as Product[];
   } catch (err: any) {
-    throw new Error(`Failed to get products from master: ${err.message}`);
+    console.error("RECOVERY: FAILED to get product list from master.", err.message);
+    throw err; // rethrow to be caught by the recovery func
   }
 };

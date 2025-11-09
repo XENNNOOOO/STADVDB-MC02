@@ -1,19 +1,23 @@
-import { getConnection } from './connections';
+import { getPool } from './connections';
 import type { ReplicationLogData, PendingSyncData } from './types';
+import type { PoolClient } from 'pg';
 
 /**
  * Replication Failure Log
  * called when a write to Node 0 Succeeds but the copy to a replica Fails.
- * this function writes the failed task to the REPLICATION_LOG table on Node 0.
+ * writes the failed task to the REPLICATION_LOG table on Node 0.
  */
 export const logReplicationFailure = async (logData: ReplicationLogData) => {
-  let connection;
+  let client: PoolClient | undefined;
   try {
     // this log always goes to the central node.
-    connection = await getConnection('central');
-    await connection.execute(
+    const pool = getPool('central');
+    client = await pool.connect();
+    
+    // Use $1, $2, $3... for PostgreSQL
+    await client.query(
       `INSERT INTO REPLICATION_LOG (target_node, status, query_text, query_params)
-       VALUES (?, ?, ?, ?)`,
+       VALUES ($1, $2, $3, $4)`,
       [logData.target_node, 'pending', logData.query_text, logData.query_params]
     );
     console.log(`RECOVERY: Logged replication failure for ${logData.target_node} to Node 0.`);
@@ -21,25 +25,28 @@ export const logReplicationFailure = async (logData: ReplicationLogData) => {
     // if node 0 is also down, we have a catastrophic failure.
     console.error(`CRITICAL: FAILED TO LOG REPLICATION FAILURE. ${err.message}`);
   } finally {
-    if (connection) await connection.end();
+    if (client) client.release();
   }
 };
 
 /**
  * Pending Sync Queue (Failover)
- * called when a write to Node 0 fails, and the failover write to a
- * local node (1 or 2) SUCCEEDS.
- * This function writes the successful failover to the `PENDING_SYNC` table
+ * called when a write to Node 0 fails, and the failover write to a local node (1 or 2) SUCCEEDS.
+ * writes the successful failover to the `PENDING_SYNC` table
  * on the local node that succeeded
  */
 export const logPendingSync = async (node: 'node1' | 'node2', logData: PendingSyncData) => {
-  let connection;
+  let client: PoolClient | undefined;
   try {
     // this log goes to the local node that handled the failover.
-    connection = await getConnection(node);
-    await connection.execute(
+    const pool = getPool(node);
+    client = await pool.connect();
+    
+    // Use $1, $2, $3... for PostgreSQL
+    // NOTE: in postgreSQL, order_data will be stored as JSONB
+    await client.query(
       `INSERT INTO PENDING_SYNC (origin_node, delivery_date, order_data)
-       VALUES (?, ?, ?)`,
+       VALUES ($1, $2, $3)`,
       [logData.origin_node, logData.delivery_date, logData.order_data]
     );
     console.log(`RECOVERY: Logged pending sync on ${node}.`);
@@ -47,7 +54,7 @@ export const logPendingSync = async (node: 'node1' | 'node2', logData: PendingSy
     // prolly not gonna happen
     console.error(`CRITICAL: FAILED TO LOG PENDING SYNC ON ${node}. ${err.message}`);
   } finally {
-    if (connection) await connection.end();
+    if (client) client.release();
   }
 };
 
@@ -57,13 +64,16 @@ export const logPendingSync = async (node: 'node1' | 'node2', logData: PendingSy
  * writes the pending task to the last available node.
  */
 export const logEmergencyPendingSync = async (emergencyNode: 'node1' | 'node2', logData: PendingSyncData) => {
-  let connection;
+  let client: PoolClient | undefined;
   try {
     // log goes to the only node that is still online.
-    connection = await getConnection(emergencyNode);
-    await connection.execute(
+    const pool = getPool(emergencyNode);
+    client = await pool.connect();
+    
+    // Use $1, $2, $3... for PostgreSQL
+    await client.query(
       `INSERT INTO PENDING_SYNC (origin_node, delivery_date, order_data)
-       VALUES (?, ?, ?)`,
+       VALUES ($1, $2, $3)`,
       [logData.origin_node, logData.delivery_date, logData.order_data]
     );
     console.log(`RECOVERY: Logged emergency pending sync on ${emergencyNode}.`);
@@ -72,6 +82,6 @@ export const logEmergencyPendingSync = async (emergencyNode: 'node1' | 'node2', 
     console.error(`CRITICAL: FAILED TO LOG EMERGENCY SYNC. All nodes are down. ${err.message}`);
     throw new Error("All database nodes are unavailable. Write failed.");
   } finally {
-    if (connection) await connection.end();
+    if (client) client.release();
   }
 };
