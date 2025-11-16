@@ -1,7 +1,47 @@
-import { getPool } from './connections';
+import { getConnection } from './connections';
 import { logReplicationFailure, logPendingSync, logEmergencyPendingSync } from './db-log';
-import type { PoolClient } from 'pg';
+import { getProducts } from './db-read';
+import type { Connection } from 'mysql2/promise';
 import type { OrderFormData, Product } from './types';
+
+/**
+ * Calculates the total amount for an order.
+ * must be called before any write transaction.
+ * uses getProducts function which has its own failover.
+ */
+const calculateTotalAmount = async (
+  items: { productNumber: string; quantity: number }[],
+  year: '2024' | '2025'
+): Promise<number> => {
+  let total = 0;
+  try {
+    // get all products. Use the year as a "hint" for the most efficient node 
+    // getProducts is fault-tolerant and will check all 3 nodes.
+    const products: Product[] = await getProducts(year);
+    
+    // create a price map for efficient lookups
+    const priceMap = new Map<string, number>();
+    products.forEach(p => {
+      priceMap.set(p.PRODUCT_NUMBER, p.UNIT_PRICE);
+    });
+
+    // calculate the total
+    for (const item of items) {
+      const price = priceMap.get(item.productNumber);
+      if (!price) {
+        throw new Error(`Invalid product number: ${item.productNumber}`);
+      }
+      total += price * item.quantity;
+    }
+    return total;
+
+  } catch (err: any) {
+    console.error("FATAL: Could not calculate total amount.", err.message);
+    // if we can't get product prices, we must fail the transaction. (this means that all nodes are down or product data is corrupt)
+    throw new Error(`Could not calculate total: ${err.message}`);
+  }
+};
+
 
 /**
  * CREATE ORDER
@@ -13,15 +53,23 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
   const year = new Date(deliveryDate).getFullYear() === 2025 ? '2025' : '2024';
   const orderNumber = orderData.orderNumber; 
 
+  // FIX: Calculate total amount *once* at the beginning.
+  const totalAmount = await calculateTotalAmount(orderData.items, year);
+  
+  // determine failover paths
+  const failoverNode = year === '2025' ? 'node1' : 'node2';
+  const emergencyNode = year === '2025' ? 'node2' : 'node1';
+
   // try to write to PRIMARY (Node 0)
-  let client: PoolClient | undefined;
+  let connection: Connection | undefined;
   try {
     console.log(`WRITE [${orderNumber}]: Trying Node 0 (Primary)...`);
-    const pool = getPool('central');
-    client = await pool.connect();
+    connection = await getConnection('central');
     
-    // calc total and write to Node 0 w/in a single transaction
-    const totalAmount = await calculateAndWrite(client, orderNumber, orderData, year, 'CREATE');
+    // Write to Node 0
+    await executeWriteTransaction(connection, orderNumber, orderData, totalAmount);
+    
+    await connection.end();
     
     // write successful. asynchronously replicate to replicas.
     console.log(`WRITE [${orderNumber}]: Success on Node 0. Replicating...`);
@@ -32,32 +80,33 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
     return orderNumber; 
 
   } catch (err: any) {
+    if (connection) await connection.end(); 
     console.warn(`WRITE: Node 0 failed. (${err.message}). Failing over...`);
 
     // try to write to FAILOVER (Node 1 or 2)
-    const failoverNode = year === '2025' ? 'node1' : 'node2';
     try {
       console.log(`WRITE [${orderNumber}]: Trying Node ${failoverNode} (Failover)...`);
-      const pool = getPool(failoverNode);
-      client = await pool.connect();
+      connection = await getConnection(failoverNode);
       
-      // calculate total and write to the local node
-      await calculateAndWrite(client, orderNumber, orderData, year, 'CREATE');
+      // write to the local node
+      await executeWriteTransaction(connection, orderNumber, orderData, totalAmount);
       
       // write succeeded. now we log it back to master
       await logPendingSync(failoverNode, {
         origin_node: failoverNode,
         delivery_date: deliveryDate,
-        order_data: orderData, // PostgreSQL handles JSON directly
+        order_data: JSON.stringify(orderData),
       });
       
+      await connection.end();
       return `${orderNumber} (Saved locally, sync to central pending)`;
 
     } catch (failoverErr: any) {
+      if (connection) await connection.end(); 
       console.warn(`WRITE [${orderNumber}]: Node ${failoverNode} failed. (${failoverErr.message}). Emergency failover...`);
       
       // try to write to EMERGENCY (Node 2 or 1)
-      const emergencyNode = year === '2025' ? 'node2' : 'node1';
+      // handles Nodes 0+1 Down or 0+2 Down
       try {
         console.log(`WRITE [${orderNumber}]: Trying Node ${emergencyNode} (Emergency Log)...`);
         
@@ -65,7 +114,7 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
         await logEmergencyPendingSync(emergencyNode, {
           origin_node: failoverNode, // intended origin
           delivery_date: deliveryDate,
-          order_data: orderData, 
+          order_data: JSON.stringify(orderData),
         });
         
         return `${orderNumber} (Write failed over to emergency log on ${emergencyNode})`;
@@ -76,8 +125,6 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
         throw new Error("All database nodes are unavailable. Write failed.");
       }
     }
-  } finally {
-    if (client) client.release();
   }
 };
 
@@ -88,46 +135,47 @@ export const updateOrder = async (id: string, orderData: OrderFormData): Promise
   const { deliveryDate } = orderData;
   const year = new Date(deliveryDate).getFullYear() === 2025 ? '2025' : '2024';
   
+  // FIX: Calculate total amount *once* at the beginning.
+  const totalAmount = await calculateTotalAmount(orderData.items, year);
+  
   const failoverNode = year === '2025' ? 'node1' : 'node2';
   const emergencyNode = year === '2025' ? 'node2' : 'node1';
 
   // try to write to PRIMARY (Node 0)
-  let client: PoolClient | undefined;
+  let connection: Connection | undefined;
   try {
     console.log(`UPDATE [${id}]: Trying Node 0 (Primary)...`);
-    const pool = getPool('central');
-    client = await pool.connect();
-
-    // calc total and update on Node 0
-    const totalAmount = await calculateAndWrite(client, id, orderData, year, 'UPDATE');
+    connection = await getConnection('central');
+    await executeUpdateTransaction(connection, id, orderData, totalAmount);
+    await connection.end();
     
     console.log(`UPDATE [${id}]: Success on Node 0. Replicating...`);
     // we don't wait for this, just fire and forget.
-    replicateWrite(id, orderData, totalAmount, year, 'UPDATE');
+    replicateUpdate(id, orderData, totalAmount);
     
     return id;
 
   } catch (err: any) {
+    if (connection) await connection.end(); 
     console.warn(`UPDATE: Node 0 failed. (${err.message}). Failing over...`);
 
     // try to write to FAILOVER (Node 1 or 2)
     try {
       console.log(`UPDATE [${id}]: Trying Node ${failoverNode} (Failover)...`);
-      const pool = getPool(failoverNode);
-      client = await pool.connect();
-      
-      // calc total and update on local node
-      await calculateAndWrite(client, id, orderData, year, 'UPDATE');
+      connection = await getConnection(failoverNode);
+      await executeUpdateTransaction(connection, id, orderData, totalAmount);
       
       await logPendingSync(failoverNode, {
         origin_node: failoverNode,
         delivery_date: deliveryDate,
-        order_data: orderData, 
+        order_data: JSON.stringify(orderData), // log the full data
       });
       
+      await connection.end();
       return `${id} (Updated locally, sync to central pending)`;
 
     } catch (failoverErr: any) {
+      if (connection) await connection.end(); 
       console.warn(`UPDATE [${id}]: Node ${failoverNode} failed. (${failoverErr.message}). Emergency failover...`);
       
       // try to write to EMERGENCY (Node 2 or 1)
@@ -136,7 +184,7 @@ export const updateOrder = async (id: string, orderData: OrderFormData): Promise
         await logEmergencyPendingSync(emergencyNode, {
           origin_node: failoverNode,
           delivery_date: deliveryDate,
-          order_data: orderData,
+          order_data: JSON.stringify(orderData),
         });
         
         return `${id} (Update failed over to emergency log on ${emergencyNode})`;
@@ -146,8 +194,6 @@ export const updateOrder = async (id: string, orderData: OrderFormData): Promise
         throw new Error("All database nodes are unavailable. Update failed.");
       }
     }
-  } finally {
-    if (client) client.release();
   }
 };
 
@@ -160,12 +206,12 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
   const emergencyNode = year === '2025' ? 'node2' : 'node1';
   
   // try to write to PRIMARY (Node 0)
-  let client: PoolClient | undefined;
+  let connection: Connection | undefined;
   try {
     console.log(`DELETE [${id}]: Trying Node 0 (Primary)...`);
-    const pool = getPool('central');
-    client = await pool.connect();
-    await executeDeleteTransaction(client, id);
+    connection = await getConnection('central');
+    await executeDeleteTransaction(connection, id);
+    await connection.end();
     
     console.log(`DELETE [${id}]: Success on Node 0. Replicating...`);
 
@@ -174,25 +220,27 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
     return id;
 
   } catch (err: any) {
+    if (connection) await connection.end(); 
     console.warn(`DELETE: Node 0 failed. (${err.message}). Failing over...`);
     
     // try to write to FAILOVER (Node 1 or 2)
     try {
       console.log(`DELETE [${id}]: Trying Node ${failoverNode} (Failover)...`);
-      const pool = getPool(failoverNode);
-      client = await pool.connect();
-      await executeDeleteTransaction(client, id);
+      connection = await getConnection(failoverNode);
+      await executeDeleteTransaction(connection, id);
       
       // log deletion as a PENDING task
       await logPendingSync(failoverNode, {
         origin_node: failoverNode,
         delivery_date: year.toString(),
-        order_data: { orderNumber: id, _action: 'DELETE' },
+        order_data: JSON.stringify({ orderNumber: id, _action: 'DELETE' }),
       });
       
+      await connection.end();
       return `${id} (Deleted locally, sync to central pending)`;
 
     } catch (failoverErr: any) {
+      if (connection) await connection.end(); 
       console.warn(`DELETE [${id}]: Node ${failoverNode} failed. (${failoverErr.message}). Emergency failover...`);
 
       // try to write to EMERGENCY (Node 2 or 1)
@@ -201,7 +249,7 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
         await logEmergencyPendingSync(emergencyNode, {
           origin_node: failoverNode,
           delivery_date: year.toString(),
-          order_data: { orderNumber: id, _action: 'DELETE' },
+          order_data: JSON.stringify({ orderNumber: id, _action: 'DELETE' }),
         });
         
         return `${id} (Delete failed over to emergency log on ${emergencyNode})`;
@@ -211,8 +259,6 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
         throw new Error("All database nodes are unavailable. Delete failed.");
       }
     }
-  } finally {
-    if (client) client.release();
   }
 };
 
@@ -223,113 +269,113 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
  * calculate and write/update data.
  * contains all our locking logic.
  */
-const calculateAndWrite = async (
-  client: PoolClient,
-  orderNumber: string,
-  orderData: OrderFormData,
-  year: '2024' | '2025',
-  mode: 'CREATE' | 'UPDATE'
-) => {
-  let totalAmount = 0;
-
-  try {
-    // concurrency: REPEATABLE READ for all writes
-    await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
-    await client.query('BEGIN');
-
-    // get product prices & apply shared lock
-    // lock the products first to ensure their prices don't change.
-    // helps prevent deadlocks.
-    const productNumbers = orderData.items.map(item => item.productNumber);
-    const { rows: products } = await client.query(
-      `SELECT PRODUCT_NUMBER, UNIT_PRICE FROM PRODUCT 
-       WHERE PRODUCT_NUMBER = ANY($1::text[])
-       FOR SHARE`, // shared lock
-      [productNumbers]
-    );
-
-    const priceMap = new Map<string, number>();
-    (products as Product[]).forEach(p => priceMap.set(p.PRODUCT_NUMBER, p.UNIT_PRICE));
-
-    for (const item of orderData.items) {
-      const price = priceMap.get(item.productNumber);
-      if (!price) throw new Error(`Invalid product number: ${item.productNumber}`);
-      totalAmount += price * item.quantity;
-    }
-
-    //  Write/Update Operation
-    
-    if (mode === 'CREATE') {
-      // create new order (Implicit Exclusive Lock)
-      await client.query(
-        `INSERT INTO ORDER_HEADER (ORDER_NUMBER, CUSTOMER_NUMBER, ORDER_DATE, DELIVERY_DATE, TOTAL_AMOUNT) 
-         VALUES ($1, $2, $3, $4, $5)`,
-        [orderNumber, orderData.customerNumber, new Date(), orderData.deliveryDate, totalAmount]
-      );
-    } else {
-      // update existing order (Explicit Exclusive Lock)
-      // lock the header first to maintain consistent lock order
-      const { rowCount } = await client.query(
-        `SELECT 1 FROM ORDER_HEADER WHERE ORDER_NUMBER = $1 FOR UPDATE`, // exclusive lock
-        [orderNumber]
-      );
-      if (rowCount === 0) throw new Error(`Order ${orderNumber} not found.`);
-      
-      await client.query(
-        `UPDATE ORDER_HEADER SET 
-           CUSTOMER_NUMBER = $1, 
-           DELIVERY_DATE = $2, 
-           TOTAL_AMOUNT = $3
-         WHERE ORDER_NUMBER = $4`,
-        [orderData.customerNumber, orderData.deliveryDate, totalAmount, orderNumber]
-      );
-      
-      // delete old details
-      await client.query(
-        `DELETE FROM ORDER_DETAILS WHERE ORDER_NUMBER = $1`,
-        [orderNumber]
-      );
-    }
-
-    // insert details
-    for (const item of orderData.items) {
-      await client.query(
-        `INSERT INTO ORDER_DETAILS (ORDER_NUMBER, PRODUCT_NUMBER, QUANTITY_ORDERED) VALUES ($1, $2, $3)`,
-        [orderNumber, item.productNumber, item.quantity]
-      );
-    }
-
-    await client.query('COMMIT');
-    return totalAmount;
-
-  } catch (err) {
-    // if any query fails, roll back the entire transaction
-    await client.query('ROLLBACK');
-    throw err; // rethrow the error
-  }
-};
+// This helper function is no longer needed, as calculateTotalAmount is separate
+// and the execute functions are simple.
 
 /**
  * Helper: Executes the actual SQL INSERTs for a new order.
  */
 export const executeWriteTransaction = async (
-  client: PoolClient,
-  orderNumber: string, 
-  orderData: OrderFormData
+  connection: Connection,
+  orderNumber: string, // The ID (e.g., 'ORD-A1B2C3')
+  orderData: OrderFormData,
+  totalAmount: number 
 ) => {
-  // now a wrapper for the new helper
-  return calculateAndWrite(client, orderNumber, orderData, new Date(orderData.deliveryDate).getFullYear() === 2025 ? '2025' : '2024', 'CREATE');
+  try {
+    // concurrency: REPEATABLE READ for all writes
+    await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
+    await connection.beginTransaction();
+
+    // --- 1. Apply Shared Lock to Products ---
+    const productNumbers = orderData.items.map(item => item.productNumber);
+    const placeholders = productNumbers.map(() => '?').join(',');
+    await connection.execute(
+      `SELECT 1 FROM PRODUCT WHERE PRODUCT_NUMBER IN (${placeholders}) FOR SHARE`,
+      productNumbers
+    );
+
+    // insert into Header
+    await connection.execute(
+      `INSERT INTO ORDER_HEADER (ORDER_NUMBER, CUSTOMER_NUMBER, ORDER_DATE, DELIVERY_DATE, TOTAL_AMOUNT) 
+       VALUES (?, ?, ?, ?, ?)`,
+      [orderNumber, orderData.customerNumber, new Date(), orderData.deliveryDate, totalAmount]
+    );
+
+    // Insert into Details
+    for (const item of orderData.items) {
+      await connection.execute(
+        `INSERT INTO ORDER_DETAILS (ORDER_NUMBER, PRODUCT_NUMBER, QUANTITY_ORDERED) VALUES (?, ?, ?)`,
+        [orderNumber, item.productNumber, item.quantity]
+      );
+    }
+    
+    // All queries succeeded
+    await connection.commit();
+
+  } catch (err) {
+    // If any query fails, roll back the entire transaction
+    await connection.rollback();
+    throw err; // Re-throw the error to be caught by the main function
+  }
 };
 
 /**
  * Helper: Executes the SQL UPDATEs for an existing order.
  */
 export const executeUpdateTransaction = async (
-  client: PoolClient,
-  orderNumber: string, 
-  orderData: OrderFormData
+  connection: Connection,
+  orderNumber: string, // The ID
+  orderData: OrderFormData,
+  totalAmount: number 
 ) => {
-  return calculateAndWrite(client, orderNumber, orderData, new Date(orderData.deliveryDate).getFullYear() === 2025 ? '2025' : '2024', 'UPDATE');
+  try {
+    await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
+    await connection.beginTransaction();
+
+    // --- 1. Apply Shared Lock to Products ---
+    const productNumbers = orderData.items.map(item => item.productNumber);
+    const placeholders = productNumbers.map(() => '?').join(',');
+    await connection.execute(
+      `SELECT 1 FROM PRODUCT WHERE PRODUCT_NUMBER IN (${placeholders}) FOR SHARE`,
+      productNumbers
+    );
+    
+    // --- 2. Apply Exclusive Lock to Header (Deadlock Prevention) ---
+    const [rows] = await connection.execute(
+      `SELECT 1 FROM ORDER_HEADER WHERE ORDER_NUMBER = ? FOR UPDATE`, // exclusive lock
+      [orderNumber]
+    );
+    if ((rows as any[]).length === 0) throw new Error(`Order ${orderNumber} not found.`);
+
+    // --- 3. Now, perform all writes ---
+    await connection.execute(
+      `UPDATE ORDER_HEADER SET 
+         CUSTOMER_NUMBER = ?, 
+         DELIVERY_DATE = ?, 
+         TOTAL_AMOUNT = ?
+       WHERE ORDER_NUMBER = ?`,
+      [orderData.customerNumber, orderData.deliveryDate, totalAmount, orderNumber]
+    );
+
+    // delete old details
+    await connection.execute(
+      `DELETE FROM ORDER_DETAILS WHERE ORDER_NUMBER = ?`,
+      [orderNumber]
+    );
+    
+    // insert new details
+    for (const item of orderData.items) {
+      await connection.execute(
+        `INSERT INTO ORDER_DETAILS (ORDER_NUMBER, PRODUCT_NUMBER, QUANTITY_ORDERED) VALUES (?, ?, ?)`,
+        [orderNumber, item.productNumber, item.quantity]
+      );
+    }
+
+    await connection.commit();
+  } catch (err) {
+    await connection.rollback();
+    throw err;
+  }
 };
 
 
@@ -338,42 +384,41 @@ export const executeUpdateTransaction = async (
  * implements consistent lock order for deadlock prevention.
  */
 export const executeDeleteTransaction = async (
-  client: PoolClient,
+  connection: Connection,
   orderNumber: string
 ) => {
   try {
-    // concurrency: REPEATABLE READ for all writes
-    await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
-    await client.query('BEGIN');
+    await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
+    await connection.beginTransaction();
     
     // DEADLOCK PREVENTION
     // lock the ORDER_HEADER row FIRST, before touching ORDER_DETAILS
     // ensures a consistent lock order (Header -> Details)
     // with our executeUpdateTransaction function.
-    const { rowCount } = await client.query(
-      `SELECT 1 FROM ORDER_HEADER WHERE ORDER_NUMBER = $1 FOR UPDATE`, // exclusive lock
+    const [rows] = await connection.execute(
+      `SELECT 1 FROM ORDER_HEADER WHERE ORDER_NUMBER = ? FOR UPDATE`, // exclusive lock
       [orderNumber]
     );
 
     // if the row doesn't exist, we can just commit (nothing to delete)
-    if (rowCount === 0) {
-      await client.query('COMMIT');
+    if ((rows as any[]).length === 0) {
+      await connection.commit();
       return;
     }
 
     // must delete from details first due to foreign key constraints
-    await client.query(
-      `DELETE FROM ORDER_DETAILS WHERE ORDER_NUMBER = $1`,
+    await connection.execute(
+      `DELETE FROM ORDER_DETAILS WHERE ORDER_NUMBER = ?`,
       [orderNumber]
     );
-    await client.query(
-      `DELETE FROM ORDER_HEADER WHERE ORDER_NUMBER = $1`,
+    await connection.execute(
+      `DELETE FROM ORDER_HEADER WHERE ORDER_NUMBER = ?`,
       [orderNumber]
     );
 
-    await client.query('COMMIT');
+    await connection.commit();
   } catch (err) {
-    await client.query('ROLLBACK');
+    await connection.rollback();
     throw err;
   }
 };
@@ -393,17 +438,16 @@ const replicateWrite = async (
   // determine which replica to write to (Node 1 or 2)
   const targetNode = year === '2025' ? 'node1' : 'node2';
   const queryText = mode === 'CREATE' ? 'REPLICATE_CREATE_ORDER' : 'REPLICATE_UPDATE_ORDER';
-
-  let client: PoolClient | undefined;
+  
+  let connection: Connection | undefined;
   try {
     // try to connect and write to the replica
     console.log(`REPLICATE (${mode}): Trying to copy to Node ${targetNode}...`);
-    const pool = getPool(targetNode);
-    client = await pool.connect();
+    connection = await getConnection(targetNode);
     if (mode === 'CREATE') {
-      await executeWriteTransaction(client, orderNumber, orderData);
+      await executeWriteTransaction(connection, orderNumber, orderData, totalAmount);
     } else {
-      await executeUpdateTransaction(client, orderNumber, orderData);
+      await executeUpdateTransaction(connection, orderNumber, orderData, totalAmount);
     }
     console.log(`REPLICATE (${mode}): Success on Node ${targetNode}.`);
     
@@ -413,23 +457,22 @@ const replicateWrite = async (
     await logReplicationFailure({
       target_node: targetNode,
       query_text: queryText,
-      query_params: { orderNumber, orderData, totalAmount }
+      query_params: JSON.stringify({ orderNumber, orderData, totalAmount })
     });
   } finally {
-    if (client) client.release();
+    if (connection) await connection.end();
   }
 
   // replicate to the other node (the backup replica)
   const backupNode = year === '2025' ? 'node2' : 'node1';
-  let backupClient: PoolClient | undefined;
+  let backupConnection: Connection | undefined;
   try {
     console.log(`REPLICATE (${mode}): Trying to copy to Node ${backupNode} (Backup)...`);
-    const pool = getPool(backupNode);
-    backupClient = await pool.connect();
+    backupConnection = await getConnection(backupNode);
     if (mode === 'CREATE') {
-      await executeWriteTransaction(backupClient, orderNumber, orderData);
+      await executeWriteTransaction(backupConnection, orderNumber, orderData, totalAmount);
     } else {
-      await executeUpdateTransaction(backupClient, orderNumber, orderData);
+      await executeUpdateTransaction(backupConnection, orderNumber, orderData, totalAmount);
     }
     console.log(`REPLICATE (${mode}): Success on Node ${backupNode}.`);
 
@@ -438,10 +481,10 @@ const replicateWrite = async (
     await logReplicationFailure({
       target_node: backupNode,
       query_text: queryText,
-      query_params: { orderNumber, orderData, totalAmount }
+      query_params: JSON.stringify({ orderNumber, orderData, totalAmount })
     });
   } finally {
-    if (backupClient) backupClient.release();
+    if (backupConnection) await backupConnection.end();
   }
 };
 
@@ -466,38 +509,36 @@ const replicateDelete = async (orderNumber: string, year: '2024' | '2025') => {
   const backupNode = year === '2025' ? 'node2' : 'node1';
 
   // replicate to target node
-  let client: PoolClient | undefined;
+  let connection: Connection | undefined;
   try {
     console.log(`REPLICATE (DELETE): Trying to copy to Node ${targetNode}...`);
-    const pool = getPool(targetNode);
-    client = await pool.connect();
-    await executeDeleteTransaction(client, orderNumber);
+    connection = await getConnection(targetNode);
+    await executeDeleteTransaction(connection, orderNumber);
   } catch (err: any) {
     console.warn(`REPLICATE (DELETE): Failed to copy to Node ${targetNode}. Logging failure...`);
     await logReplicationFailure({
       target_node: targetNode,
       query_text: 'REPLICATE_DELETE_ORDER',
-      query_params: { orderNumber }
+      query_params: JSON.stringify({ orderNumber })
     });
   } finally {
-    if (client) client.release();
+    if (connection) await connection.end();
   }
 
   // replicate to backup node
-  let backupClient: PoolClient | undefined;
+  let backupConnection: Connection | undefined;
   try {
     console.log(`REPLICATE (DELETE): Trying to copy to Node ${backupNode}...`);
-    const pool = getPool(backupNode);
-    backupClient = await pool.connect();
-    await executeDeleteTransaction(backupClient, orderNumber);
+    backupConnection = await getConnection(backupNode);
+    await executeDeleteTransaction(backupConnection, orderNumber);
   } catch (err: any) {
     console.warn(`REPLICATE (DELETE): Failed to copy to Node ${backupNode}. Logging failure...`);
     await logReplicationFailure({
       target_node: backupNode,
       query_text: 'REPLICATE_DELETE_ORDER',
-      query_params: { orderNumber }
+      query_params: JSON.stringify({ orderNumber })
     });
   } finally {
-    if (backupClient) backupClient.release();
+    if (backupConnection) await backupConnection.end();
   }
 };

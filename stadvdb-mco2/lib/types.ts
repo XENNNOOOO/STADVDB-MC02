@@ -1,13 +1,13 @@
-import type { Pool } from 'pg';
+import type { Connection } from 'mysql2/promise';
 
-// edit this file to add any shared types used in multiple files
+// edit this if needed
 
 export interface Order {
   ORDER_NUMBER: string;
-  CUSTOMER_NUMBER: string;  // Note guys: PostgreSQL varchar/text maps to string
-  ORDER_DATE: string;       // PostgreSQL timestamp will be read as a string
-  DELIVERY_DATE: string;    // PostgreSQL date will be read as a string
-  TOTAL_AMOUNT: number;     // PostgreSQL numeric/decimal will be read as a string or number
+  CUSTOMER_NUMBER: string;
+  ORDER_DATE: string; 
+  DELIVERY_DATE: string; 
+  TOTAL_AMOUNT: number;
 }
 
 export interface OrderItem {
@@ -30,19 +30,19 @@ export interface OrderFormData {
     productNumber: string;
     quantity: number;
   }[];
-  _action?: 'DELETE'; 
+  _action?: 'DELETE'; // Used for logging a delete action
 }
 
 export interface ReplicationLogData {
   target_node: 'node1' | 'node2';
   query_text: string;
-  query_params: any; // JSON.stringify(params)
+  query_params: string; // JSON.stringify(params)
 }
 
 export interface PendingSyncData {
   origin_node: 'node1' | 'node2';
   delivery_date: string;
-  order_data: any; // JSON.stringify(OrderFormData)
+  order_data: string; // JSON.stringify(OrderFormData)
 }
 
 // 3-step failover path for reads
@@ -50,4 +50,4 @@ export type ReadPath = ['node1' | 'node2', 'central' | 'node1' | 'node2', 'centr
 
 // DB connection
 export type NodeName = 'central' | 'node1' | 'node2';
-export type GetConnectionFn = (node: NodeName) => Pool;
+export type GetConnectionFn = (node: NodeName) => Promise<Connection>;
