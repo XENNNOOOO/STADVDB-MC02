@@ -277,7 +277,7 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
  */
 export const executeWriteTransaction = async (
   connection: Connection,
-  orderNumber: string, // The ID (e.g., 'ORD-A1B2C3')
+  orderNumber: string, 
   orderData: OrderFormData,
   totalAmount: number 
 ) => {
@@ -286,7 +286,7 @@ export const executeWriteTransaction = async (
     await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
     await connection.beginTransaction();
 
-    // --- 1. Apply Shared Lock to Products ---
+    // apply Shared Lock to Products 
     const productNumbers = orderData.items.map(item => item.productNumber);
     const placeholders = productNumbers.map(() => '?').join(',');
     await connection.execute(
@@ -324,7 +324,7 @@ export const executeWriteTransaction = async (
  */
 export const executeUpdateTransaction = async (
   connection: Connection,
-  orderNumber: string, // The ID
+  orderNumber: string, 
   orderData: OrderFormData,
   totalAmount: number 
 ) => {
@@ -332,7 +332,7 @@ export const executeUpdateTransaction = async (
     await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
     await connection.beginTransaction();
 
-    // --- 1. Apply Shared Lock to Products ---
+    // apply Shared Lock to Products 
     const productNumbers = orderData.items.map(item => item.productNumber);
     const placeholders = productNumbers.map(() => '?').join(',');
     await connection.execute(
@@ -340,14 +340,14 @@ export const executeUpdateTransaction = async (
       productNumbers
     );
     
-    // --- 2. Apply Exclusive Lock to Header (Deadlock Prevention) ---
+    // apply Exclusive Lock to Header (Deadlock Prevention) 
     const [rows] = await connection.execute(
       `SELECT 1 FROM ORDER_HEADER WHERE ORDER_NUMBER = ? FOR UPDATE`, // exclusive lock
       [orderNumber]
     );
     if ((rows as any[]).length === 0) throw new Error(`Order ${orderNumber} not found.`);
 
-    // --- 3. Now, perform all writes ---
+    // perform all writes
     await connection.execute(
       `UPDATE ORDER_HEADER SET 
          CUSTOMER_NUMBER = ?, 
