@@ -3,7 +3,7 @@ import type { NodeName } from './types';
 
 // Connection Configs
 
-// TODO: Update with the actual DB credentials
+// TODO: Update with the actual DB credentials @leebrien @Luwes6174 
 // Node 0 (Server 0) - Master, All Data
 const node0_Central_Config: mysql.ConnectionOptions = {
   host: '127.0.0.1', // Server0 connects to its own DB
