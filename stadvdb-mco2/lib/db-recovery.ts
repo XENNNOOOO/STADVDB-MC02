@@ -219,7 +219,7 @@ export const runReplicationLog = async () => {
 const orderExists = async (connection: Connection, orderNumber: string): Promise<boolean> => {
   try {
     const [rows] = await connection.execute(
-      'SELECT 1 FROM ORDER_HEADER WHERE ORDER_NUMBER = ? LIMIT 1',
+      'SELECT 1 FROM Orders WHERE orderNumber = ? LIMIT 1',
       [orderNumber]
     );
     return (rows as any[]).length > 0;

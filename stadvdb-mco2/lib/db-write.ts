@@ -290,13 +290,13 @@ export const executeWriteTransaction = async (
     const productNumbers = orderData.items.map(item => item.productNumber);
     const placeholders = productNumbers.map(() => '?').join(',');
     await connection.execute(
-      `SELECT 1 FROM PRODUCT WHERE PRODUCT_NUMBER IN (${placeholders}) FOR SHARE`,
+      `SELECT 1 FROM Products WHERE id IN (${placeholders}) FOR SHARE`,
       productNumbers
     );
 
     // insert into Header
     await connection.execute(
-      `INSERT INTO ORDER_HEADER (ORDER_NUMBER, CUSTOMER_NUMBER, ORDER_DATE, DELIVERY_DATE, TOTAL_AMOUNT) 
+      `INSERT INTO Orders (orderNumber, userId, createdAt, deliveryDate, totalAmount)
        VALUES (?, ?, ?, ?, ?)`,
       [orderNumber, orderData.customerNumber, new Date(), orderData.deliveryDate, totalAmount]
     );
@@ -304,7 +304,7 @@ export const executeWriteTransaction = async (
     // Insert into Details
     for (const item of orderData.items) {
       await connection.execute(
-        `INSERT INTO ORDER_DETAILS (ORDER_NUMBER, PRODUCT_NUMBER, QUANTITY_ORDERED) VALUES (?, ?, ?)`,
+        `INSERT INTO OrderItems (orderNumber, productId, quantity) VALUES (?, ?, ?)`,
         [orderNumber, item.productNumber, item.quantity]
       );
     }
@@ -336,37 +336,37 @@ export const executeUpdateTransaction = async (
     const productNumbers = orderData.items.map(item => item.productNumber);
     const placeholders = productNumbers.map(() => '?').join(',');
     await connection.execute(
-      `SELECT 1 FROM PRODUCT WHERE PRODUCT_NUMBER IN (${placeholders}) FOR SHARE`,
+      `SELECT 1 FROM Products WHERE id IN (${placeholders}) FOR SHARE`,
       productNumbers
     );
     
     // apply Exclusive Lock to Header (Deadlock Prevention) 
     const [rows] = await connection.execute(
-      `SELECT 1 FROM ORDER_HEADER WHERE ORDER_NUMBER = ? FOR UPDATE`, // exclusive lock
+      `SELECT 1 FROM Orders WHERE orderNumber = ? FOR UPDATE`, // exclusive lock
       [orderNumber]
     );
     if ((rows as any[]).length === 0) throw new Error(`Order ${orderNumber} not found.`);
 
     // perform all writes
     await connection.execute(
-      `UPDATE ORDER_HEADER SET 
-         CUSTOMER_NUMBER = ?, 
-         DELIVERY_DATE = ?, 
-         TOTAL_AMOUNT = ?
-       WHERE ORDER_NUMBER = ?`,
+      `UPDATE Orders SET
+         userId = ?,
+         deliveryDate = ?,
+         totalAmount = ?
+       WHERE orderNumber = ?`,
       [orderData.customerNumber, orderData.deliveryDate, totalAmount, orderNumber]
     );
 
     // delete old details
     await connection.execute(
-      `DELETE FROM ORDER_DETAILS WHERE ORDER_NUMBER = ?`,
+      `DELETE FROM OrderItems WHERE orderNumber = ?`,
       [orderNumber]
     );
     
     // insert new details
     for (const item of orderData.items) {
       await connection.execute(
-        `INSERT INTO ORDER_DETAILS (ORDER_NUMBER, PRODUCT_NUMBER, QUANTITY_ORDERED) VALUES (?, ?, ?)`,
+        `INSERT INTO OrderItems (orderNumber, productId, quantity) VALUES (?, ?, ?)`,
         [orderNumber, item.productNumber, item.quantity]
       );
     }
@@ -396,7 +396,7 @@ export const executeDeleteTransaction = async (
     // ensures a consistent lock order (Header -> Details)
     // with our executeUpdateTransaction function.
     const [rows] = await connection.execute(
-      `SELECT 1 FROM ORDER_HEADER WHERE ORDER_NUMBER = ? FOR UPDATE`, // exclusive lock
+      `SELECT 1 FROM Orders WHERE orderNumber = ? FOR UPDATE`, // exclusive lock
       [orderNumber]
     );
 
@@ -408,11 +408,11 @@ export const executeDeleteTransaction = async (
 
     // must delete from details first due to foreign key constraints
     await connection.execute(
-      `DELETE FROM ORDER_DETAILS WHERE ORDER_NUMBER = ?`,
+      `DELETE FROM OrderItems WHERE orderNumber = ?`,
       [orderNumber]
     );
     await connection.execute(
-      `DELETE FROM ORDER_HEADER WHERE ORDER_NUMBER = ?`,
+      `DELETE FROM Orders WHERE orderNumber = ?`,
       [orderNumber]
     );
 

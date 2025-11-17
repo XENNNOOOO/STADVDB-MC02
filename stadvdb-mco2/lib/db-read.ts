@@ -26,9 +26,12 @@ export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> =
       
       // query works on all 3 nodes
       // Use ? placeholders and YEAR() for MySQL
+      // Map database columns to API format
       const [rows] = await connection.execute(
-        `SELECT ORDER_NUMBER, CUSTOMER_NUMBER, ORDER_DATE, DELIVERY_DATE, TOTAL_AMOUNT 
-         FROM ORDER_HEADER WHERE YEAR(DELIVERY_DATE) = ?`,
+        `SELECT orderNumber as ORDER_NUMBER, userId as CUSTOMER_NUMBER,
+                createdAt as ORDER_DATE, deliveryDate as DELIVERY_DATE,
+                0 as TOTAL_AMOUNT
+         FROM Orders WHERE YEAR(deliveryDate) = ?`,
         [year]
       );
       
@@ -72,7 +75,10 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<O
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED;');
       
       const [rows] = await connection.execute(
-        `SELECT * FROM ORDER_HEADER WHERE ORDER_NUMBER = ?`,
+        `SELECT orderNumber as ORDER_NUMBER, userId as CUSTOMER_NUMBER,
+                createdAt as ORDER_DATE, deliveryDate as DELIVERY_DATE,
+                0 as TOTAL_AMOUNT
+         FROM Orders WHERE orderNumber = ?`,
         [id]
       );
       
@@ -121,7 +127,10 @@ export const getProducts = async (year: '2024' | '2025'): Promise<Product[]> => 
       connection = await getConnection(node);
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
       
-      const [rows] = await connection.execute('SELECT PRODUCT_NUMBER, PRODUCT_NAME, UNIT_PRICE FROM PRODUCT');
+      const [rows] = await connection.execute(
+        `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE
+         FROM Products`
+      );
       
       await connection.end();
       console.log(`READ [Products]: Success on Node ${node}.`);
@@ -146,7 +155,10 @@ export const getProductsFromMaster = async (connection: Connection): Promise<Pro
   try {
     // re-uses the connection from the recovery script
     await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
-    const [rows] = await connection.execute('SELECT PRODUCT_NUMBER, PRODUCT_NAME, UNIT_PRICE FROM PRODUCT');
+    const [rows] = await connection.execute(
+      `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE
+       FROM Products`
+    );
     return rows as Product[];
   } catch (err: any) {
     console.error("RECOVERY: FAILED to get product list from master.", err.message);
