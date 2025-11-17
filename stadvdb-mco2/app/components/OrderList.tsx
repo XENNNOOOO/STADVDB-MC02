@@ -14,21 +14,116 @@ interface Order {
   FAILOVER_PATH?: string[];
 }
 
+interface Product {
+  PRODUCT_NUMBER: string;
+  PRODUCT_NAME: string;
+  UNIT_PRICE: number;
+}
+
+interface APIResponse<T> {
+  success: boolean;
+  data?: T;
+  message?: string;
+  error?: string;
+}
+
 type YearFilterType = 'all' | '2024' | '2025';
 type ModalMode = 'view' | 'edit' | 'create' | 'delete' | null;
 
-const MOCK_PRODUCTS = [
-  { number: 'P-101', name: 'TrailMaster Tent', price: 250.0 },
-  { number: 'P-102', name: 'TrekPro Backpack', price: 150.0 },
-  { number: 'P-103', name: 'AquaPure Filter', price: 75.0 },
-  { number: 'P-104', name: 'Summit Sleeping Bag', price: 180.0 },
-  { number: 'P-105', name: 'Alpine Hiking Boots', price: 220.0 },
-];
-
-export default function OrderList({ orders }: { orders: Order[] }) {
+export default function OrderList() {
   const [filter, setFilter] = useState<YearFilterType>('all');
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [modalMode, setModalMode] = useState<ModalMode>(null);
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Fetch products on component mount
+  useEffect(() => {
+    const fetchProducts = async () => {
+      try {
+        const response = await fetch('/api/products?year=2025');
+        const result: APIResponse<Product[]> = await response.json();
+
+        if (result.success && result.data) {
+          setProducts(result.data);
+        } else {
+          console.error('Failed to fetch products:', result.error);
+        }
+      } catch (err: any) {
+        console.error('Error fetching products:', err);
+      }
+    };
+
+    fetchProducts();
+  }, []);
+
+  // Fetch orders based on filter
+  useEffect(() => {
+    const fetchOrders = async () => {
+      setLoading(true);
+      setError(null);
+
+      try {
+        let allOrders: Order[] = [];
+
+        if (filter === 'all') {
+          // Fetch both 2024 and 2025 data
+          const [response2024, response2025] = await Promise.allSettled([
+            fetch('/api/orders?year=2024'),
+            fetch('/api/orders?year=2025')
+          ]);
+
+          // Handle 2024 data
+          if (response2024.status === 'fulfilled' && response2024.value.ok) {
+            const result2024: APIResponse<Order[]> = await response2024.value.json();
+            if (result2024.success && result2024.data) {
+              allOrders = [...allOrders, ...result2024.data];
+            }
+          }
+
+          // Handle 2025 data
+          if (response2025.status === 'fulfilled' && response2025.value.ok) {
+            const result2025: APIResponse<Order[]> = await response2025.value.json();
+            if (result2025.success && result2025.data) {
+              allOrders = [...allOrders, ...result2025.data];
+            }
+          }
+
+          if (response2024.status === 'rejected' && response2025.status === 'rejected') {
+            throw new Error('Failed to fetch orders from any node');
+          }
+        } else {
+          // Fetch specific year data
+          const year = filter === '2024' ? '2024' : '2025';
+          const response = await fetch(`/api/orders?year=${year}`);
+
+          if (!response.ok) {
+            throw new Error(`Failed to fetch orders: ${response.statusText}`);
+          }
+
+          const result: APIResponse<Order[]> = await response.json();
+
+          if (!result.success || !result.data) {
+            throw new Error(result.error || 'Failed to fetch orders');
+          }
+
+          allOrders = result.data;
+        }
+
+        setOrders(allOrders);
+      } catch (err: any) {
+        console.error('Error fetching orders:', err);
+        setError(err.message || 'Failed to fetch orders');
+        setOrders([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchOrders();
+  }, [filter]);
 
   // Lock body scroll when modal is open
   useEffect(() => {
@@ -103,6 +198,19 @@ export default function OrderList({ orders }: { orders: Order[] }) {
           </div>
         </div>
 
+        {loading ? (
+          <div className="px-6 py-12 text-center">
+            <p className="text-slate-500 font-medium">Loading orders...</p>
+          </div>
+        ) : error ? (
+          <div className="px-6 py-12 text-center">
+            <p className="text-red-600 font-medium">{error}</p>
+          </div>
+        ) : filteredOrders.length === 0 ? (
+          <div className="px-6 py-12 text-center">
+            <p className="text-slate-500 font-medium">No orders found</p>
+          </div>
+        ) : (
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-slate-50 border-b-2 border-slate-200">
@@ -206,13 +314,8 @@ export default function OrderList({ orders }: { orders: Order[] }) {
               })}
             </tbody>
           </table>
-
-          {filteredOrders.length === 0 && (
-            <div className="text-center py-16">
-              <p className="text-slate-500 font-medium">No orders found for the selected filter.</p>
-            </div>
-          )}
         </div>
+        )}
       </div>
 
       {modalMode && (
@@ -230,6 +333,7 @@ export default function OrderList({ orders }: { orders: Order[] }) {
               setModalMode('delete');
             }
           }}
+          products={products}
         />
       )}
     </>
@@ -242,9 +346,10 @@ interface OrderModalProps {
   onClose: () => void;
   onEdit?: () => void;
   onDelete?: () => void;
+  products: Product[];
 }
 
-function OrderModal({ mode, order, onClose, onEdit, onDelete }: OrderModalProps) {
+function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderModalProps) {
   const [formData, setFormData] = useState({
     customerNumber: order?.CUSTOMER_NUMBER || '',
     orderDate: order?.ORDER_DATE || '',
@@ -266,8 +371,8 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete }: OrderModalProps)
 
   const calculateTotal = () => {
     return formData.items.reduce((total, item) => {
-      const product = MOCK_PRODUCTS.find((p) => p.number === item.productNumber);
-      return total + (product?.price || 0) * item.quantity;
+      const product = products.find((p) => p.PRODUCT_NUMBER === item.productNumber);
+      return total + (product?.UNIT_PRICE || 0) * item.quantity;
     }, 0);
   };
 
@@ -548,9 +653,9 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete }: OrderModalProps)
                       className="w-full appearance-none px-3 py-2 pr-10 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm font-medium bg-white cursor-pointer text-slate-700"
                     >
                       <option value="">Select a product</option>
-                      {MOCK_PRODUCTS.map((product) => (
-                        <option key={product.number} value={product.number}>
-                          {product.name} - ${product.price.toFixed(2)}
+                      {products.map((product) => (
+                        <option key={product.PRODUCT_NUMBER} value={product.PRODUCT_NUMBER}>
+                          {product.PRODUCT_NAME} - ${product.UNIT_PRICE.toFixed(2)}
                         </option>
                       ))}
                     </select>
@@ -573,7 +678,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete }: OrderModalProps)
                   <div className="w-28">
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Subtotal</label>
                     <div className="px-3 py-2 bg-slate-100 rounded-lg text-slate-900 font-bold text-sm">
-                      ${((MOCK_PRODUCTS.find((p) => p.number === item.productNumber)?.price || 0) * item.quantity).toFixed(2)}
+                      ${((products.find((p) => p.PRODUCT_NUMBER === item.productNumber)?.UNIT_PRICE || 0) * item.quantity).toFixed(2)}
                     </div>
                   </div>
 
