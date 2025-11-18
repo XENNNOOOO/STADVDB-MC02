@@ -135,7 +135,7 @@ export const updateOrder = async (id: string, orderData: OrderFormData): Promise
   const { deliveryDate } = orderData;
   const year = new Date(deliveryDate).getFullYear() === 2025 ? '2025' : '2024';
   
-  // FIX: Calculate total amount *once* at the beginning.
+  // Calculate total amount once at the beginning.
   const totalAmount = await calculateTotalAmount(orderData.items, year);
   
   const failoverNode = year === '2025' ? 'node1' : 'node2';
