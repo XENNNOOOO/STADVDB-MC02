@@ -1,29 +1,43 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Pencil, Trash2, Eye, Server, AlertTriangle, CheckCircle2, X, User, Package as PackageIcon, DollarSign, Plus, ChevronDown } from 'lucide-react';
+import { Pencil, Trash2, Eye, X, Plus, ChevronDown } from 'lucide-react';
 import QuickActions from './QuickActions';
 
 interface Order {
-  ORDER_NUMBER: string;
-  CUSTOMER_NUMBER: string;
-  ORDER_DATE: string;
-  DELIVERY_DATE: string;
-  TOTAL_AMOUNT: number;
+  id: number;
+  orderNumber: string;
+  userId: number;
+  deliveryDate: string;
+  deliveryRiderId?: number;
+  createdAt: string;
+  updatedAt: string;
   NODE_ACCESSED?: string;
   FAILOVER_PATH?: string[];
 }
 
 interface Product {
-  PRODUCT_NUMBER: string;
-  PRODUCT_NAME: string;
-  UNIT_PRICE: number;
+  id: number;
+  name: string;
+  price: number;
+  productNumber?: string;
 }
 
 interface APIResponse<T> {
   success: boolean;
   data?: T;
   message?: string;
+  failover_info?: {
+    used_node: string;
+    attempts: string[];
+    pagination?: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+      hasMore: boolean;
+    };
+  };
   error?: string;
 }
 
@@ -31,13 +45,19 @@ type YearFilterType = 'all' | '2024' | '2025';
 type ModalMode = 'view' | 'edit' | 'create' | 'delete' | null;
 
 export default function OrderList() {
-  const [filter, setFilter] = useState<YearFilterType>('all');
+  const [filter, setFilter] = useState<YearFilterType>('2025');
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [modalMode, setModalMode] = useState<ModalMode>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [totalOrders, setTotalOrders] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
 
   // Fetch products on component mount
   useEffect(() => {
@@ -59,60 +79,39 @@ export default function OrderList() {
     fetchProducts();
   }, []);
 
-  // Fetch orders based on filter
+  // Fetch orders based on filter and pagination
   useEffect(() => {
     const fetchOrders = async () => {
       setLoading(true);
       setError(null);
 
       try {
-        let allOrders: Order[] = [];
+        // For "all" filter, default to 2025 to avoid complexity
+        // User can switch to specific year for better performance
+        const year = filter === 'all' ? '2025' : filter;
 
-        if (filter === 'all') {
-          // Fetch both 2024 and 2025 data
-          const [response2024, response2025] = await Promise.allSettled([
-            fetch('/api/orders?year=2024'),
-            fetch('/api/orders?year=2025')
-          ]);
+        const response = await fetch(
+          `/api/orders?year=${year}&page=${currentPage}&limit=${pageSize}`
+        );
 
-          // Handle 2024 data
-          if (response2024.status === 'fulfilled' && response2024.value.ok) {
-            const result2024: APIResponse<Order[]> = await response2024.value.json();
-            if (result2024.success && result2024.data) {
-              allOrders = [...allOrders, ...result2024.data];
-            }
-          }
-
-          // Handle 2025 data
-          if (response2025.status === 'fulfilled' && response2025.value.ok) {
-            const result2025: APIResponse<Order[]> = await response2025.value.json();
-            if (result2025.success && result2025.data) {
-              allOrders = [...allOrders, ...result2025.data];
-            }
-          }
-
-          if (response2024.status === 'rejected' && response2025.status === 'rejected') {
-            throw new Error('Failed to fetch orders from any node');
-          }
-        } else {
-          // Fetch specific year data
-          const year = filter === '2024' ? '2024' : '2025';
-          const response = await fetch(`/api/orders?year=${year}`);
-
-          if (!response.ok) {
-            throw new Error(`Failed to fetch orders: ${response.statusText}`);
-          }
-
-          const result: APIResponse<Order[]> = await response.json();
-
-          if (!result.success || !result.data) {
-            throw new Error(result.error || 'Failed to fetch orders');
-          }
-
-          allOrders = result.data;
+        if (!response.ok) {
+          throw new Error(`Failed to fetch orders: ${response.statusText}`);
         }
 
-        setOrders(allOrders);
+        const result: APIResponse<Order[]> = await response.json();
+
+        if (!result.success || !result.data) {
+          throw new Error(result.error || 'Failed to fetch orders');
+        }
+
+        setOrders(result.data);
+
+        // Update pagination metadata from response
+        if (result.failover_info?.pagination) {
+          setTotalOrders(result.failover_info.pagination.total);
+          setTotalPages(result.failover_info.pagination.totalPages);
+        }
+
       } catch (err: any) {
         console.error('Error fetching orders:', err);
         setError(err.message || 'Failed to fetch orders');
@@ -123,7 +122,7 @@ export default function OrderList() {
     };
 
     fetchOrders();
-  }, [filter]);
+  }, [filter, currentPage, pageSize]);
 
   // Lock body scroll when modal is open
   useEffect(() => {
@@ -140,26 +139,12 @@ export default function OrderList() {
   }, [modalMode]);
 
   const filteredOrders = orders.filter((order) => {
-    const year = parseInt(order.DELIVERY_DATE.slice(0, 4));
+    const year = parseInt(order.deliveryDate.slice(0, 4));
     if (filter === '2024') return year <= 2024;
     if (filter === '2025') return year >= 2025;
     return true;
   });
 
-  const getNodeBadgeColor = (node?: string) => {
-    if (!node) return 'bg-slate-100 text-slate-600 border-slate-200';
-    if (node === 'Node 0') return 'bg-indigo-100 text-indigo-700 border-indigo-200';
-    if (node === 'Node 1') return 'bg-emerald-100 text-emerald-700 border-emerald-200';
-    if (node === 'Node 2') return 'bg-purple-100 text-purple-700 border-purple-200';
-    return 'bg-slate-100 text-slate-600 border-slate-200';
-  };
-
-  const getFailoverStatus = (failoverPath?: string[]) => {
-    if (!failoverPath || failoverPath.length === 0) return null;
-    if (failoverPath.length === 1)
-      return { text: 'Direct', color: 'text-emerald-600', icon: CheckCircle2 };
-    return { text: 'Failover', color: 'text-amber-600', icon: AlertTriangle };
-  };
 
   const openModal = (mode: ModalMode, order?: Order) => {
     setSelectedOrder(order || null);
@@ -169,6 +154,16 @@ export default function OrderList() {
   const closeModal = () => {
     setSelectedOrder(null);
     setModalMode(null);
+  };
+
+  const handleFilterChange = (newFilter: YearFilterType) => {
+    setFilter(newFilter);
+    setCurrentPage(1); // Reset to first page when filter changes
+  };
+
+  const handlePageSizeChange = (newSize: number) => {
+    setPageSize(newSize);
+    setCurrentPage(1); // Reset to first page when page size changes
   };
 
   return (
@@ -182,7 +177,7 @@ export default function OrderList() {
             <div className="relative">
               <select
                 value={filter}
-                onChange={(e) => setFilter(e.target.value as YearFilterType)}
+                onChange={(e) => handleFilterChange(e.target.value as YearFilterType)}
                 className="appearance-none pl-4 pr-10 py-2.5 text-sm font-semibold border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white text-slate-700 cursor-pointer hover:bg-slate-50 transition-colors"
               >
                 <option value="all">All Years</option>
@@ -215,26 +210,20 @@ export default function OrderList() {
           <table className="w-full">
             <thead className="bg-slate-50 border-b-2 border-slate-200">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-bold text-slate-700 uppercase tracking-wider">
+                <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
                   Order #
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-bold text-slate-700 uppercase tracking-wider">
-                  Customer
+                <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Customer ID
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-bold text-slate-700 uppercase tracking-wider">
-                  Order Date
+                <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Created At
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-bold text-slate-700 uppercase tracking-wider">
+                <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
                   Delivery Date
                 </th>
-                <th className="px-6 py-3 text-right text-xs font-bold text-slate-700 uppercase tracking-wider">
-                  Amount
-                </th>
                 <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
-                  Node
-                </th>
-                <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
-                  Status
+                  Rider ID
                 </th>
                 <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
                   Actions
@@ -243,78 +232,143 @@ export default function OrderList() {
             </thead>
 
             <tbody className="bg-white divide-y divide-slate-200">
-              {filteredOrders.map((order) => {
-                const failoverStatus = getFailoverStatus(order.FAILOVER_PATH);
-                const StatusIcon = failoverStatus?.icon;
-
-                return (
-                  <tr key={order.ORDER_NUMBER} className="hover:bg-slate-50 transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="font-semibold text-slate-900">{order.ORDER_NUMBER}</span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-slate-600 font-medium">
-                      {order.CUSTOMER_NUMBER}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-slate-600">
-                      {order.ORDER_DATE}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-slate-600">
-                      {order.DELIVERY_DATE}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-right font-bold text-slate-900">
-                      ${order.TOTAL_AMOUNT.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-center">
-                      <span
-                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border ${getNodeBadgeColor(
-                          order.NODE_ACCESSED
-                        )}`}
+              {filteredOrders.map((order) => (
+                <tr key={order.orderNumber} className="hover:bg-slate-50 transition-colors">
+                  <td className="px-6 py-4 whitespace-nowrap text-center">
+                    <span className="font-semibold text-slate-900">{order.orderNumber}</span>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600 font-medium">
+                    {order.userId}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600">
+                    {new Date(order.createdAt).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600">
+                    {new Date(order.deliveryDate).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600">
+                    {order.deliveryRiderId || 'Not Assigned'}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center">
+                    <div className="flex justify-center gap-2">
+                      <button
+                        onClick={() => openModal('view', order)}
+                        className="p-2 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                        title="View Details"
                       >
-                        <Server size={12} />
-                        {order.NODE_ACCESSED || 'N/A'}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-center">
-                      {failoverStatus && StatusIcon && (
-                        <span
-                          className={`inline-flex items-center gap-1 text-xs font-semibold ${failoverStatus.color}`}
-                        >
-                          <StatusIcon size={14} />
-                          {failoverStatus.text}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-center">
-                      <div className="flex justify-center gap-2">
-                        <button
-                          onClick={() => openModal('view', order)}
-                          className="p-2 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
-                          title="View Details"
-                        >
-                          <Eye size={16} />
-                        </button>
-                        <button
-                          onClick={() => openModal('edit', order)}
-                          className="p-2 text-slate-600 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
-                          title="Edit Order"
-                        >
-                          <Pencil size={16} />
-                        </button>
-                        <button
-                          onClick={() => openModal('delete', order)}
-                          className="p-2 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
-                          title="Delete Order"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+                        <Eye size={16} />
+                      </button>
+                      <button
+                        onClick={() => openModal('edit', order)}
+                        className="p-2 text-slate-600 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
+                        title="Edit Order"
+                      >
+                        <Pencil size={16} />
+                      </button>
+                      <button
+                        onClick={() => openModal('delete', order)}
+                        className="p-2 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                        title="Delete Order"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
+        )}
+
+        {/* Pagination Controls */}
+        {!loading && !error && orders.length > 0 && (
+          <div className="px-6 py-4 border-t-2 border-slate-200 bg-slate-50">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+
+              {/* Left: Results info */}
+              <div className="text-sm text-slate-600 font-medium">
+                Showing {((currentPage - 1) * pageSize) + 1} to{' '}
+                {Math.min(currentPage * pageSize, totalOrders)} of{' '}
+                {totalOrders} orders
+              </div>
+
+              {/* Center: Page controls */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="px-4 py-2 border-2 border-slate-300 rounded-lg text-sm font-semibold
+                             disabled:opacity-30 disabled:cursor-not-allowed
+                             hover:bg-slate-100 transition-all text-slate-700"
+                >
+                  Previous
+                </button>
+
+                {/* Page numbers */}
+                <div className="flex gap-1">
+                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                    // Show current page and 2 pages before and after
+                    let pageNum;
+                    if (totalPages <= 5) {
+                      pageNum = i + 1;
+                    } else if (currentPage <= 3) {
+                      pageNum = i + 1;
+                    } else if (currentPage >= totalPages - 2) {
+                      pageNum = totalPages - 4 + i;
+                    } else {
+                      pageNum = currentPage - 2 + i;
+                    }
+
+                    return (
+                      <button
+                        key={pageNum}
+                        onClick={() => setCurrentPage(pageNum)}
+                        className={`px-3 py-2 rounded-lg text-sm font-semibold transition-all ${
+                          currentPage === pageNum
+                            ? 'bg-indigo-600 text-white'
+                            : 'hover:bg-slate-100 text-slate-700 border-2 border-slate-300'
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage >= totalPages}
+                  className="px-4 py-2 border-2 border-slate-300 rounded-lg text-sm font-semibold
+                             disabled:opacity-30 disabled:cursor-not-allowed
+                             hover:bg-slate-100 transition-all text-slate-700"
+                >
+                  Next
+                </button>
+              </div>
+
+              {/* Right: Page size selector */}
+              <div className="relative">
+                <select
+                  value={pageSize}
+                  onChange={(e) => handlePageSizeChange(parseInt(e.target.value))}
+                  className="appearance-none pl-3 pr-10 py-2 text-sm font-semibold border-2 border-slate-300 rounded-lg
+                             focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500
+                             bg-white text-slate-700 cursor-pointer hover:bg-slate-50 transition-colors"
+                >
+                  <option value="25">25 per page</option>
+                  <option value="50">50 per page</option>
+                  <option value="100">100 per page</option>
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
+                  <svg className="h-4 w-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                  </svg>
+                </div>
+              </div>
+
+            </div>
+          </div>
         )}
       </div>
 
@@ -351,10 +405,11 @@ interface OrderModalProps {
 
 function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderModalProps) {
   const [formData, setFormData] = useState({
-    customerNumber: order?.CUSTOMER_NUMBER || '',
-    orderDate: order?.ORDER_DATE || '',
-    deliveryDate: order?.DELIVERY_DATE || '',
-    items: [{ productNumber: 'P-101', quantity: 2 }],
+    userId: order?.userId || '',
+    createdAt: order?.createdAt || '',
+    deliveryDate: order?.deliveryDate || '',
+    deliveryRiderId: order?.deliveryRiderId || '',
+    items: [{ productId: 1, quantity: 2 }],
   });
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -365,21 +420,21 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
   };
 
   const handleDelete = () => {
-    alert(`[UI-ONLY] Deleting order ${order?.ORDER_NUMBER}`);
+    alert(`[UI-ONLY] Deleting order ${order?.orderNumber}`);
     onClose();
   };
 
   const calculateTotal = () => {
     return formData.items.reduce((total, item) => {
-      const product = products.find((p) => p.PRODUCT_NUMBER === item.productNumber);
-      return total + (product?.UNIT_PRICE || 0) * item.quantity;
+      const product = products.find((p) => p.id === item.productId);
+      return total + (product?.price || 0) * item.quantity;
     }, 0);
   };
 
   const addItem = () => {
     setFormData({
       ...formData,
-      items: [...formData.items, { productNumber: '', quantity: 1 }],
+      items: [...formData.items, { productId: 0, quantity: 1 }],
     });
   };
 
@@ -390,7 +445,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
     });
   };
 
-  const updateItem = (index: number, field: 'productNumber' | 'quantity', value: string | number) => {
+  const updateItem = (index: number, field: 'productId' | 'quantity', value: string | number) => {
     const newItems = [...formData.items];
     newItems[index] = { ...newItems[index], [field]: value };
     setFormData({ ...formData, items: newItems });
@@ -406,7 +461,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             <div className="flex justify-between items-start">
               <div>
                 <h3 className="text-2xl font-bold text-slate-900 mb-1">Order Details</h3>
-                <p className="text-slate-500 text-sm font-medium">{order?.ORDER_NUMBER}</p>
+                <p className="text-slate-500 text-sm font-medium">{order?.orderNumber}</p>
               </div>
               <button
                 onClick={onClose}
@@ -423,8 +478,8 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             <div>
               <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Customer Information</h4>
               <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
-                <p className="text-sm text-slate-600 mb-1">Customer Number</p>
-                <p className="text-lg font-bold text-slate-900">{order?.CUSTOMER_NUMBER}</p>
+                <p className="text-sm text-slate-600 mb-1">Customer ID</p>
+                <p className="text-lg font-bold text-slate-900">{order?.userId}</p>
               </div>
             </div>
 
@@ -433,43 +488,31 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
               <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Order Information</h4>
               <div className="grid grid-cols-2 gap-4">
                 <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
-                  <p className="text-sm text-slate-600 mb-1">Order Date</p>
-                  <p className="text-lg font-bold text-slate-900">{order?.ORDER_DATE}</p>
+                  <p className="text-sm text-slate-600 mb-1">Created At</p>
+                  <p className="text-lg font-bold text-slate-900">
+                    {order?.createdAt && new Date(order.createdAt).toLocaleString('en-US', {
+                      month: '2-digit',
+                      day: '2-digit',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                      hour12: true
+                    })}
+                  </p>
                 </div>
                 <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
                   <p className="text-sm text-slate-600 mb-1">Delivery Date</p>
-                  <p className="text-lg font-bold text-slate-900">{order?.DELIVERY_DATE}</p>
+                  <p className="text-lg font-bold text-slate-900">{order?.deliveryDate && new Date(order.deliveryDate).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}</p>
                 </div>
-              </div>
-            </div>
-
-            {/* Payment */}
-            <div>
-              <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Payment</h4>
-              <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
-                <p className="text-sm text-slate-600 mb-1">Total Amount</p>
-                <p className="text-2xl font-bold text-emerald-600">
-                  ${order?.TOTAL_AMOUNT.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                </p>
-              </div>
-            </div>
-
-            {/* Database Information */}
-            <div>
-              <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Database Information</h4>
-              <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200 space-y-4">
-                <div>
-                  <p className="text-sm text-slate-600 mb-1">Node Accessed</p>
-                  <p className="text-lg font-bold text-indigo-600">{order?.NODE_ACCESSED || 'N/A'}</p>
+                <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
+                  <p className="text-sm text-slate-600 mb-1">Delivery Rider ID</p>
+                  <p className="text-lg font-bold text-slate-900">{order?.deliveryRiderId || 'Not Assigned'}</p>
                 </div>
-                {order?.FAILOVER_PATH && order.FAILOVER_PATH.length > 0 && (
-                  <div className="pt-4 border-t-2 border-slate-200">
-                    <p className="text-sm text-slate-600 mb-1">Failover Path</p>
-                    <p className="text-sm text-slate-700 font-medium">
-                      {order.FAILOVER_PATH.join(' → ')}
-                    </p>
-                  </div>
-                )}
+                <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
+                  <p className="text-sm text-slate-600 mb-1">Last Updated</p>
+                  <p className="text-lg font-bold text-slate-900">{order?.updatedAt && new Date(order.updatedAt).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}</p>
+                </div>
               </div>
             </div>
           </div>
@@ -505,7 +548,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             <div className="flex justify-between items-start">
               <div>
                 <h3 className="text-2xl font-bold text-slate-900 mb-1">Delete Order</h3>
-                <p className="text-slate-500 text-sm font-medium">{order?.ORDER_NUMBER}</p>
+                <p className="text-slate-500 text-sm font-medium">{order?.orderNumber}</p>
               </div>
               <button
                 onClick={onClose}
@@ -561,7 +604,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                 {mode === 'create' ? 'Create New Order' : 'Edit Order'}
               </h3>
               {mode === 'edit' && (
-                <p className="text-slate-500 text-sm font-medium">{order?.ORDER_NUMBER}</p>
+                <p className="text-slate-500 text-sm font-medium">{order?.orderNumber}</p>
               )}
             </div>
             <button
@@ -580,30 +623,19 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Customer Information</h4>
             <div className="bg-slate-50 rounded-xl p-6 border-2 border-slate-200">
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">
-                    Customer Number <span className="text-red-500">*</span>
+                    Customer ID <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="text"
-                    value={formData.customerNumber}
-                    onChange={(e) => setFormData({ ...formData, customerNumber: e.target.value })}
+                    pattern="[0-9]*"
+                    inputMode="numeric"
+                    value={formData.userId}
+                    onChange={(e) => setFormData({ ...formData, userId: e.target.value })}
                     className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-medium"
-                    placeholder="e.g., CUST-001"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">
-                    Order Date <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="date"
-                    value={formData.orderDate}
-                    onChange={(e) => setFormData({ ...formData, orderDate: e.target.value })}
-                    className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-medium text-slate-700 bg-white cursor-pointer"
+                    placeholder="e.g., 123"
                     required
                   />
                 </div>
@@ -617,6 +649,22 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                     value={formData.deliveryDate}
                     onChange={(e) => setFormData({ ...formData, deliveryDate: e.target.value })}
                     className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-medium text-slate-700 bg-white cursor-pointer"
+                    required
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">
+                    Delivery Rider ID <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    pattern="[0-9]*"
+                    inputMode="numeric"
+                    value={formData.deliveryRiderId}
+                    onChange={(e) => setFormData({ ...formData, deliveryRiderId: e.target.value })}
+                    className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-medium"
+                    placeholder="e.g., 456"
                     required
                   />
                 </div>
@@ -648,14 +696,14 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                   <div className="flex-1 relative">
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Product</label>
                     <select
-                      value={item.productNumber}
-                      onChange={(e) => updateItem(index, 'productNumber', e.target.value)}
+                      value={item.productId}
+                      onChange={(e) => updateItem(index, 'productId', parseInt(e.target.value) || 0)}
                       className="w-full appearance-none px-3 py-2 pr-10 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm font-medium bg-white cursor-pointer text-slate-700"
                     >
                       <option value="">Select a product</option>
                       {products.map((product) => (
-                        <option key={product.PRODUCT_NUMBER} value={product.PRODUCT_NUMBER}>
-                          {product.PRODUCT_NAME} - ${product.UNIT_PRICE.toFixed(2)}
+                        <option key={product.id} value={product.id}>
+                          {product.name} - ${product.price.toFixed(2)}
                         </option>
                       ))}
                     </select>
@@ -678,7 +726,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                   <div className="w-28">
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Subtotal</label>
                     <div className="px-3 py-2 bg-slate-100 rounded-lg text-slate-900 font-bold text-sm">
-                      ${((products.find((p) => p.PRODUCT_NUMBER === item.productNumber)?.UNIT_PRICE || 0) * item.quantity).toFixed(2)}
+                      ${((products.find((p) => p.id === item.productId)?.price || 0) * item.quantity).toFixed(2)}
                     </div>
                   </div>
 

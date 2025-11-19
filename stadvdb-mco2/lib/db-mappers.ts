@@ -26,25 +26,6 @@ interface DatabaseOrderItem {
   price: number;
 }
 
-// Mapping functions to convert database rows to API format
-export const mapDatabaseOrderToAPI = (dbOrder: DatabaseOrder, totalAmount?: number): Order => {
-  return {
-    ORDER_NUMBER: dbOrder.orderNumber,
-    CUSTOMER_NUMBER: dbOrder.userId.toString(),
-    ORDER_DATE: dbOrder.createdAt,
-    DELIVERY_DATE: dbOrder.deliveryDate,
-    TOTAL_AMOUNT: totalAmount || 0, // Will be calculated separately
-  };
-};
-
-export const mapDatabaseProductToAPI = (dbProduct: DatabaseProduct): Product => {
-  return {
-    PRODUCT_NUMBER: dbProduct.productNumber || dbProduct.id.toString(),
-    PRODUCT_NAME: dbProduct.name,
-    UNIT_PRICE: dbProduct.price,
-  };
-};
-
 // Convert API OrderFormData to database format
 export const mapAPIOrderToDatabase = (orderData: OrderFormData) => {
   return {
@@ -110,6 +91,13 @@ export interface APIResponse<T = any> {
   failover_info?: {
     used_node: string;
     attempts: string[];
+    pagination?: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+      hasMore: boolean;
+    };
   };
   error?: string;
   details?: any;
@@ -118,7 +106,17 @@ export interface APIResponse<T = any> {
 export const createSuccessResponse = <T>(
   data: T,
   message?: string,
-  failoverInfo?: { used_node: string; attempts: string[] }
+  failoverInfo?: {
+    used_node: string;
+    attempts: string[];
+    pagination?: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+      hasMore: boolean;
+    };
+  }
 ): APIResponse<T> => {
   return {
     success: true,

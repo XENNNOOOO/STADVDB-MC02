@@ -3,10 +3,14 @@ import type { Connection } from 'mysql2/promise';
 import type { Order, Product, NodeName } from './types';
 
 /**
- * READ (All Orders for a Year)
+ * READ (All Orders for a Year with Pagination)
  * Implements 3-step failover logic based on your spec.
  */
-export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> => {
+export const getOrdersByYear = async (
+  year: '2024' | '2025',
+  limit: number = 50,
+  offset: number = 0
+): Promise<{ orders: Order[]; total: number }> => {
   // determine the correct 3-step read path based on the year
   const readPath: NodeName[] =
     year === '2025'
@@ -14,31 +18,44 @@ export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> =
       : ['node2', 'central', 'node1']; // Spec: Try Node 2 (Primary) -> Node 0 (Master) -> Node 1 (Backup)
 
   let connection: Connection | undefined;
-  
+
   // loop through the path until one succeeds
   for (const node of readPath) {
     try {
       console.log(`READ [${year}]: Trying Node ${node}...`);
-      connection = await getConnection(node); 
-      
+      connection = await getConnection(node);
+
       // fastest isolation for high-concurrency reads
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
-      
-      // query works on all 3 nodes
-      // Use ? placeholders and YEAR() for MySQL
-      // Map database columns to API format
-      const [rows] = await connection.execute(
-        `SELECT orderNumber as ORDER_NUMBER, userId as CUSTOMER_NUMBER,
-                createdAt as ORDER_DATE, deliveryDate as DELIVERY_DATE,
-                0 as TOTAL_AMOUNT
-         FROM Orders WHERE YEAR(deliveryDate) = ?`,
+
+      // Get total count for pagination metadata
+      const [countRows] = await connection.execute(
+        `SELECT COUNT(*) as total FROM Orders WHERE YEAR(deliveryDate) = ?`,
         [year]
       );
-      
+      const total = (countRows as any)[0].total;
+
+      // query works on all 3 nodes with pagination
+      // Use ? placeholders and YEAR() for MySQL
+      // Fetch all columns from database
+      // ORDER BY for consistent pagination results
+      // Note: LIMIT and OFFSET must be literal integers, not bound parameters in mysql2
+      const [rows] = await connection.execute(
+        `SELECT id, orderNumber, userId, deliveryDate, deliveryRiderId, createdAt, updatedAt
+         FROM Orders
+         WHERE YEAR(deliveryDate) = ?
+         ORDER BY deliveryDate DESC, orderNumber ASC
+         LIMIT ${limit} OFFSET ${offset}`,
+        [year]
+      );
+
       await connection.end();
-      console.log(`READ [${year}]: Success on Node ${node}.`);
-      return rows as Order[];
-    
+
+      const orders = rows as Order[];
+
+      console.log(`READ [${year}]: Success on Node ${node}. Fetched ${orders.length} of ${total} total orders.`);
+      return { orders, total };
+
     } catch (err: any) {
       console.warn(`READ: Node ${node} failed. (${err.message}). Failing over...`);
       if (connection) await connection.end();
@@ -75,15 +92,13 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<O
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED;');
       
       const [rows] = await connection.execute(
-        `SELECT orderNumber as ORDER_NUMBER, userId as CUSTOMER_NUMBER,
-                createdAt as ORDER_DATE, deliveryDate as DELIVERY_DATE,
-                0 as TOTAL_AMOUNT
+        `SELECT id, orderNumber, userId, deliveryDate, deliveryRiderId, createdAt, updatedAt
          FROM Orders WHERE orderNumber = ?`,
         [id]
       );
-      
+
       await connection.end();
-      
+
       const order = (rows as Order[])[0] || null;
       
       // ff we found the order on this node, return it
@@ -128,11 +143,12 @@ export const getProducts = async (year: '2024' | '2025'): Promise<Product[]> => 
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
       
       const [rows] = await connection.execute(
-        `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE
+        `SELECT id, name, price, productCode as productNumber
          FROM Products`
       );
-      
+
       await connection.end();
+
       console.log(`READ [Products]: Success on Node ${node}.`);
       return rows as Product[]; 
     
@@ -156,7 +172,7 @@ export const getProductsFromMaster = async (connection: Connection): Promise<Pro
     // re-uses the connection from the recovery script
     await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
     const [rows] = await connection.execute(
-      `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE
+      `SELECT id, name, price, productCode as productNumber
        FROM Products`
     );
     return rows as Product[];
