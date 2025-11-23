@@ -23,7 +23,7 @@ export interface Product {
 }
 
 export interface OrderFormData {
-  orderNumber?: string; // Optional, will be auto-generated if not provided
+  orderNumber: string;
   customerNumber: string; // Will be populated by API with hardcoded data
   deliveryDate: string;
   items: {
