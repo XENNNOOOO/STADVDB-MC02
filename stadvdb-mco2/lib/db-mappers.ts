@@ -68,13 +68,9 @@ export const generateOrderNumber = (year: '2024' | '2025'): string => {
   return `${prefix}-${timestamp}`;
 };
 
-// Validate order data
+// Validate order data - Note: customerNumber is not required from frontend (injected by API)
 export const validateOrderData = (orderData: any): { isValid: boolean; errors: string[] } => {
   const errors: string[] = [];
-
-  if (!orderData.customerNumber) {
-    errors.push('Customer number is required');
-  }
 
   if (!orderData.deliveryDate) {
     errors.push('Delivery date is required');

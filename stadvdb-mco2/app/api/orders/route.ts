@@ -8,6 +8,7 @@ import {
   getYearFromDeliveryDate,
   generateOrderNumber
 } from '@/lib/db-mappers';
+import { getUserByYear } from '@/lib/hardcoded-data';
 import type { OrderFormData } from '@/lib/types';
 
 // GET /api/orders - Read orders by year with 3-step failover
@@ -72,9 +73,12 @@ export async function POST(request: NextRequest) {
       body.orderNumber = generateOrderNumber(year);
     }
 
+    // Get hardcoded user based on delivery year
+    const hardcodedUser = getUserByYear(year);
+
     const orderData: OrderFormData = {
       orderNumber: body.orderNumber,
-      customerNumber: body.customerNumber,
+      customerNumber: hardcodedUser.id.toString(), // Inject hardcoded customer
       deliveryDate: body.deliveryDate,
       items: body.items
     };

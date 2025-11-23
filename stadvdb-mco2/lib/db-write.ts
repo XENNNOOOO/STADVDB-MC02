@@ -51,6 +51,11 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
   // determine Write Paths from Fragmentation Key
   const { deliveryDate } = orderData;
   const year = new Date(deliveryDate).getFullYear() === 2025 ? '2025' : '2024';
+
+  // Ensure orderNumber is set (should be handled by API layer)
+  if (!orderData.orderNumber) {
+    throw new Error('Order number is required');
+  }
   const orderNumber = orderData.orderNumber; 
 
   // FIX: Calculate total amount *once* at the beginning.
