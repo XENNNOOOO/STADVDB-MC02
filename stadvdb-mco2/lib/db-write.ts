@@ -1,6 +1,7 @@
 import { getConnection } from './connections';
 import { logReplicationFailure, logPendingSync, logEmergencyPendingSync } from './db-log';
 import { getProducts } from './db-read';
+import { getUserByYear, getRiderByYear } from './hardcoded-data';
 import type { Connection } from 'mysql2/promise';
 import type { OrderFormData, Product } from './types';
 
@@ -277,16 +278,16 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
  */
 export const executeWriteTransaction = async (
   connection: Connection,
-  orderNumber: string, 
+  orderNumber: string,
   orderData: OrderFormData,
-  totalAmount: number 
+  totalAmount: number
 ) => {
   try {
     // concurrency: REPEATABLE READ for all writes
     await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
     await connection.beginTransaction();
 
-    // apply Shared Lock to Products 
+    // apply Shared Lock to Products
     const productNumbers = orderData.items.map(item => item.productNumber);
     const placeholders = productNumbers.map(() => '?').join(',');
     await connection.execute(
@@ -294,11 +295,16 @@ export const executeWriteTransaction = async (
       productNumbers
     );
 
-    // insert into Header
+    // Get hardcoded user and rider based on delivery year
+    const year = new Date(orderData.deliveryDate).getFullYear() >= 2025 ? '2025' : '2024';
+    const hardcodedUser = getUserByYear(year);
+    const hardcodedRider = getRiderByYear(year);
+
+    // insert into Header with hardcoded user and rider
     await connection.execute(
-      `INSERT INTO Orders (orderNumber, userId, createdAt, deliveryDate, totalAmount)
-       VALUES (?, ?, ?, ?, ?)`,
-      [orderNumber, orderData.customerNumber, new Date(), orderData.deliveryDate, totalAmount]
+      `INSERT INTO Orders (orderNumber, userId, deliveryRiderId, createdAt, deliveryDate, totalAmount)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [orderNumber, hardcodedUser.id, hardcodedRider.id, new Date(), orderData.deliveryDate, totalAmount]
     );
 
     // Insert into Details
@@ -308,7 +314,7 @@ export const executeWriteTransaction = async (
         [orderNumber, item.productNumber, item.quantity]
       );
     }
-    
+
     // All queries succeeded
     await connection.commit();
 
@@ -324,37 +330,43 @@ export const executeWriteTransaction = async (
  */
 export const executeUpdateTransaction = async (
   connection: Connection,
-  orderNumber: string, 
+  orderNumber: string,
   orderData: OrderFormData,
-  totalAmount: number 
+  totalAmount: number
 ) => {
   try {
     await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
     await connection.beginTransaction();
 
-    // apply Shared Lock to Products 
+    // apply Shared Lock to Products
     const productNumbers = orderData.items.map(item => item.productNumber);
     const placeholders = productNumbers.map(() => '?').join(',');
     await connection.execute(
       `SELECT 1 FROM Products WHERE id IN (${placeholders}) FOR SHARE`,
       productNumbers
     );
-    
-    // apply Exclusive Lock to Header (Deadlock Prevention) 
+
+    // apply Exclusive Lock to Header (Deadlock Prevention)
     const [rows] = await connection.execute(
       `SELECT 1 FROM Orders WHERE orderNumber = ? FOR UPDATE`, // exclusive lock
       [orderNumber]
     );
     if ((rows as any[]).length === 0) throw new Error(`Order ${orderNumber} not found.`);
 
-    // perform all writes
+    // Get hardcoded user and rider based on delivery year
+    const year = new Date(orderData.deliveryDate).getFullYear() >= 2025 ? '2025' : '2024';
+    const hardcodedUser = getUserByYear(year);
+    const hardcodedRider = getRiderByYear(year);
+
+    // perform all writes with hardcoded user and rider
     await connection.execute(
       `UPDATE Orders SET
          userId = ?,
+         deliveryRiderId = ?,
          deliveryDate = ?,
          totalAmount = ?
        WHERE orderNumber = ?`,
-      [orderData.customerNumber, orderData.deliveryDate, totalAmount, orderNumber]
+      [hardcodedUser.id, hardcodedRider.id, orderData.deliveryDate, totalAmount, orderNumber]
     );
 
     // delete old details
@@ -362,7 +374,7 @@ export const executeUpdateTransaction = async (
       `DELETE FROM OrderItems WHERE orderNumber = ?`,
       [orderNumber]
     );
-    
+
     // insert new details
     for (const item of orderData.items) {
       await connection.execute(

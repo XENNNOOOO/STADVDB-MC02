@@ -30,8 +30,8 @@ interface DatabaseOrderItem {
 export const mapAPIOrderToDatabase = (orderData: OrderFormData) => {
   return {
     orderNumber: orderData.orderNumber,
-    userId: parseInt(orderData.customerNumber),
     deliveryDate: orderData.deliveryDate,
+    // userId and deliveryRiderId will be set from hardcoded data in db-write.ts
     // createdAt will be set by MySQL DEFAULT
   };
 };
@@ -52,10 +52,6 @@ export const generateOrderNumber = (year: '2024' | '2025'): string => {
 // Validate order data
 export const validateOrderData = (orderData: any): { isValid: boolean; errors: string[] } => {
   const errors: string[] = [];
-
-  if (!orderData.customerNumber) {
-    errors.push('Customer number is required');
-  }
 
   if (!orderData.deliveryDate) {
     errors.push('Delivery date is required');

@@ -405,10 +405,7 @@ interface OrderModalProps {
 
 function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderModalProps) {
   const [formData, setFormData] = useState({
-    userId: order?.userId || '',
-    createdAt: order?.createdAt || '',
     deliveryDate: order?.deliveryDate || '',
-    deliveryRiderId: order?.deliveryRiderId || '',
     items: [{ productId: 1, quantity: 2 }],
   });
 
@@ -478,8 +475,9 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             <div>
               <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Customer Information</h4>
               <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
-                <p className="text-sm text-slate-600 mb-1">Customer ID</p>
+                <p className="text-sm text-slate-600 mb-1">Customer ID (Auto-assigned)</p>
                 <p className="text-lg font-bold text-slate-900">{order?.userId}</p>
+                <p className="text-xs text-slate-500 mt-1">Automatically assigned based on delivery year</p>
               </div>
             </div>
 
@@ -506,8 +504,9 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                   <p className="text-lg font-bold text-slate-900">{order?.deliveryDate && new Date(order.deliveryDate).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}</p>
                 </div>
                 <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
-                  <p className="text-sm text-slate-600 mb-1">Delivery Rider ID</p>
+                  <p className="text-sm text-slate-600 mb-1">Delivery Rider ID (Auto-assigned)</p>
                   <p className="text-lg font-bold text-slate-900">{order?.deliveryRiderId || 'Not Assigned'}</p>
+                  <p className="text-xs text-slate-500 mt-1">Automatically assigned based on delivery year</p>
                 </div>
                 <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
                   <p className="text-sm text-slate-600 mb-1">Last Updated</p>
@@ -618,28 +617,11 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
 
         {/* Content */}
         <form onSubmit={handleSubmit} className="p-8 space-y-6">
-          {/* Customer Information */}
+          {/* Order Information */}
           <div>
-            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Customer Information</h4>
+            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Order Information</h4>
             <div className="bg-slate-50 rounded-xl p-6 border-2 border-slate-200">
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">
-                    Customer ID <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    pattern="[0-9]*"
-                    inputMode="numeric"
-                    value={formData.userId}
-                    onChange={(e) => setFormData({ ...formData, userId: e.target.value })}
-                    className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-medium"
-                    placeholder="e.g., 123"
-                    required
-                  />
-                </div>
-
+              <div className="grid grid-cols-1 gap-4">
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">
                     Delivery Date <span className="text-red-500">*</span>
@@ -652,21 +634,10 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                     required
                   />
                 </div>
-
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-semibold text-slate-700 mb-2">
-                    Delivery Rider ID <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    pattern="[0-9]*"
-                    inputMode="numeric"
-                    value={formData.deliveryRiderId}
-                    onChange={(e) => setFormData({ ...formData, deliveryRiderId: e.target.value })}
-                    className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-medium"
-                    placeholder="e.g., 456"
-                    required
-                  />
+                <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                  <p className="text-sm text-blue-700 font-medium">
+                    📋 Customer and rider information will be automatically assigned based on the delivery year.
+                  </p>
                 </div>
               </div>
             </div>

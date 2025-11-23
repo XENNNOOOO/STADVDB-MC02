@@ -92,7 +92,6 @@ export async function POST(request: NextRequest) {
 
     const orderData: OrderFormData = {
       orderNumber: body.orderNumber,
-      customerNumber: body.customerNumber,
       deliveryDate: body.deliveryDate,
       items: body.items
     };
