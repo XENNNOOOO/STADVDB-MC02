@@ -1,5 +1,6 @@
 import { getConnection } from './connections';
 import { logReplicationFailure, logPendingSync, logEmergencyPendingSync } from './db-log';
+import { getUserByYear, getRiderByYear } from './hardcoded-data';
 import { getProducts } from './db-read';
 import type { Connection } from 'mysql2/promise';
 import type { OrderFormData, Product } from './types';
@@ -58,7 +59,7 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
   }
   const orderNumber = orderData.orderNumber; 
 
-  // FIX: Calculate total amount *once* at the beginning.
+  // Calculate total amount *once* at the beginning.
   const totalAmount = await calculateTotalAmount(orderData.items, year);
   
   // determine failover paths
@@ -300,10 +301,13 @@ export const executeWriteTransaction = async (
     );
 
     // insert into Header
+    const year = new Date(orderData.deliveryDate).getFullYear() >= 2025 ? '2025' : '2024';
+    const hardcodedUser = getUserByYear(year);
+    const hardcodedRider = getRiderByYear(year);
     await connection.execute(
-      `INSERT INTO Orders (orderNumber, userId, createdAt, deliveryDate, totalAmount)
-       VALUES (?, ?, ?, ?, ?)`,
-      [orderNumber, orderData.customerNumber, new Date(), orderData.deliveryDate, totalAmount]
+      `INSERT INTO Orders (orderNumber, userId, deliveryRiderId, createdAt, deliveryDate, totalAmount)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [orderNumber, hardcodedUser.id, hardcodedRider.id, new Date(), orderData.deliveryDate, totalAmount]
     );
 
     // Insert into Details
@@ -353,13 +357,17 @@ export const executeUpdateTransaction = async (
     if ((rows as any[]).length === 0) throw new Error(`Order ${orderNumber} not found.`);
 
     // perform all writes
+    const year = new Date(orderData.deliveryDate).getFullYear() >= 2025 ? '2025' : '2024';
+    const hardcodedUser = getUserByYear(year);
+    const hardcodedRider = getRiderByYear(year);
     await connection.execute(
       `UPDATE Orders SET
          userId = ?,
+         deliveryRiderId = ?,
          deliveryDate = ?,
          totalAmount = ?
        WHERE orderNumber = ?`,
-      [orderData.customerNumber, orderData.deliveryDate, totalAmount, orderNumber]
+      [hardcodedUser.id, hardcodedRider.id, orderData.deliveryDate, totalAmount, orderNumber]
     );
 
     // delete old details
