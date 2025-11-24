@@ -1,4 +1,9 @@
-export default function OrderFilter({ selected, onChange }) {
+interface OrderFilterProps {
+  selected: 'all' | 'node1' | 'node2';
+  onChange: (filter: 'all' | 'node1' | 'node2') => void;
+}
+
+export default function OrderFilter({ selected, onChange }: OrderFilterProps) {
   return (
     <div className="flex gap-2 mb-4">
       <button
