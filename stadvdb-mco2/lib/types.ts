@@ -3,32 +3,28 @@ import type { Connection } from 'mysql2/promise';
 // edit this if needed
 
 export interface Order {
-  id: number;
-  orderNumber: string;
-  userId: number;
-  deliveryDate: string;
-  deliveryRiderId?: number;
-  createdAt: string;
-  updatedAt: string;
+  ORDER_NUMBER: string;
+  CUSTOMER_NUMBER: string;
+  ORDER_DATE: string;
+  DELIVERY_DATE: string;
+  TOTAL_AMOUNT: number;
 }
 
 export interface OrderItem {
-  id: number;
-  orderId: number;
-  productId: number;
-  quantity: number;
-  price: number;
+  ORDER_NUMBER: string;
+  PRODUCT_NUMBER: string;
+  QUANTITY_ORDERED: number;
 }
 
 export interface Product {
-  id: number;
-  name: string;
-  price: number;
-  productNumber?: string;
+  PRODUCT_NUMBER: string;
+  PRODUCT_NAME: string;
+  UNIT_PRICE: number;
 }
 
 export interface OrderFormData {
-  orderNumber?: string; // Optional, will be auto-generated if not provided
+  orderNumber: string;
+  customerNumber: string; // Will be populated by API with hardcoded data
   deliveryDate: string;
   items: {
     productNumber: string;

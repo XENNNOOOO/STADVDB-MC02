@@ -8,44 +8,27 @@ import {
   getYearFromDeliveryDate,
   generateOrderNumber
 } from '@/lib/db-mappers';
+import { getUserByYear } from '@/lib/hardcoded-data';
 import type { OrderFormData } from '@/lib/types';
 
-// GET /api/orders - Read orders by year with 3-step failover and pagination
+// GET /api/orders - Read orders by year with 3-step failover
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const yearParam = searchParams.get('year');
-    const pageParam = searchParams.get('page');
-    const limitParam = searchParams.get('limit');
 
     // Default to current year if not specified
     const year: '2024' | '2025' = yearParam === '2024' ? '2024' : '2025';
 
-    // Pagination parameters with defaults
-    const page = Math.max(1, parseInt(pageParam || '1'));
-    const limit = Math.min(100, Math.max(1, parseInt(limitParam || '50'))); // Min 1, max 100
-    const offset = (page - 1) * limit;
+    console.log(`API: GET /api/orders?year=${year} - Starting 3-step failover read...`);
 
-    console.log(`API: GET /api/orders?year=${year}&page=${page}&limit=${limit} - Starting paginated read...`);
-
-    const { orders, total } = await getOrdersByYear(year, limit, offset);
-    const totalPages = Math.ceil(total / limit);
+    const orders = await getOrdersByYear(year);
 
     return NextResponse.json(
       createSuccessResponse(
         orders,
-        `Retrieved ${orders.length} orders for year ${year} (page ${page} of ${totalPages})`,
-        {
-          used_node: 'Determined by failover logic',
-          attempts: ['See server logs'],
-          pagination: {
-            page,
-            limit,
-            total,
-            totalPages,
-            hasMore: offset + orders.length < total
-          }
-        }
+        `Retrieved ${orders.length} orders for year ${year}`,
+        { used_node: 'Determined by failover logic', attempts: ['See server logs'] }
       ),
       { status: 200 }
     );
@@ -90,8 +73,12 @@ export async function POST(request: NextRequest) {
       body.orderNumber = generateOrderNumber(year);
     }
 
+    // Get hardcoded user based on delivery year
+    const hardcodedUser = getUserByYear(year);
+
     const orderData: OrderFormData = {
       orderNumber: body.orderNumber,
+      customerNumber: hardcodedUser.id.toString(), // Inject hardcoded customer
       deliveryDate: body.deliveryDate,
       items: body.items
     };

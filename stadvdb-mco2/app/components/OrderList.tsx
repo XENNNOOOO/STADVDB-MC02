@@ -5,22 +5,19 @@ import { Pencil, Trash2, Eye, X, Plus, ChevronDown } from 'lucide-react';
 import QuickActions from './QuickActions';
 
 interface Order {
-  id: number;
-  orderNumber: string;
-  userId: number;
-  deliveryDate: string;
-  deliveryRiderId?: number;
-  createdAt: string;
-  updatedAt: string;
+  ORDER_NUMBER: string;
+  CUSTOMER_NUMBER: string;
+  ORDER_DATE: string;
+  DELIVERY_DATE: string;
+  TOTAL_AMOUNT: number;
   NODE_ACCESSED?: string;
   FAILOVER_PATH?: string[];
 }
 
 interface Product {
-  id: number;
-  name: string;
-  price: number;
-  productNumber?: string;
+  PRODUCT_NUMBER: string;
+  PRODUCT_NAME: string;
+  UNIT_PRICE: number;
 }
 
 interface APIResponse<T> {
@@ -139,7 +136,7 @@ export default function OrderList() {
   }, [modalMode]);
 
   const filteredOrders = orders.filter((order) => {
-    const year = parseInt(order.deliveryDate.slice(0, 4));
+    const year = parseInt(order.DELIVERY_DATE.slice(0, 4));
     if (filter === '2024') return year <= 2024;
     if (filter === '2025') return year >= 2025;
     return true;
@@ -233,21 +230,21 @@ export default function OrderList() {
 
             <tbody className="bg-white divide-y divide-slate-200">
               {filteredOrders.map((order) => (
-                <tr key={order.orderNumber} className="hover:bg-slate-50 transition-colors">
+                <tr key={order.ORDER_NUMBER} className="hover:bg-slate-50 transition-colors">
                   <td className="px-6 py-4 whitespace-nowrap text-center">
-                    <span className="font-semibold text-slate-900">{order.orderNumber}</span>
+                    <span className="font-semibold text-slate-900">{order.ORDER_NUMBER}</span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600 font-medium">
-                    {order.userId}
+                    {order.CUSTOMER_NUMBER}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600">
-                    {new Date(order.createdAt).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}
+                    {new Date(order.ORDER_DATE).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600">
-                    {new Date(order.deliveryDate).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}
+                    {new Date(order.DELIVERY_DATE).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600">
-                    {order.deliveryRiderId || 'Not Assigned'}
+                    {'Not Assigned'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-center">
                     <div className="flex justify-center gap-2">

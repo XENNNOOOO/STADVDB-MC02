@@ -1,7 +1,6 @@
-
 import { getConnection } from './connections';
 import { executeWriteTransaction, executeUpdateTransaction, executeDeleteTransaction } from './db-write';
-import { getProductsFromMaster } from './db-read'; 
+import { getProductsFromMaster } from './db-read';
 import type { Connection } from 'mysql2/promise';
 import type { NodeName, OrderFormData, Product } from './types';
 
@@ -9,14 +8,14 @@ interface PendingSyncLog {
   log_id: number;
   origin_node: NodeName;
   delivery_date: string;
-  order_data: string; 
+  order_data: string;
 }
 
 interface ReplicationLog {
   log_id: number;
   target_node: NodeName;
   query_text: string;
-  query_params: string; 
+  query_params: string;
 }
 
 /**
@@ -33,7 +32,7 @@ const readPendingSyncLog = async (node: 'node1' | 'node2'): Promise<PendingSyncL
   } catch (err: any) {
     console.warn(`RECOVERY: Could not read PENDING_SYNC log from ${node}. It might be down.`, err.message);
     if (connection) await connection.end();
-    return []; 
+    return [];
     // return empty array if node is down
   }
 };
@@ -67,7 +66,7 @@ export const runPendingSync = async () => {
     let productPriceMap = new Map<string, number>();
     try {
       // uses centralConnection because we are syncing to central
-      const products: Product[] = await getProductsFromMaster(centralConnection); 
+      const products: Product[] = await getProductsFromMaster(centralConnection);
       products.forEach(p => {
         productPriceMap.set(p.PRODUCT_NUMBER, p.UNIT_PRICE);
       });
@@ -101,12 +100,12 @@ export const runPendingSync = async () => {
             }
             totalAmount += price * item.quantity;
           }
-          
+
           // check if this was a DELETE action
           if ((orderData as any)._action === 'DELETE') {
             console.log(`RECOVERY (SYNC): Re-running DELETE ${orderNumber} on Node 0...`);
             await executeDeleteTransaction(centralConnection, orderNumber);
-          } 
+          }
           // check if this was an UPDATE action
           else if (await orderExists(centralConnection, orderNumber)) {
             console.log(`RECOVERY (SYNC): Re-running UPDATE ${orderNumber} on Node 0...`);
@@ -128,7 +127,7 @@ export const runPendingSync = async () => {
         }
       }
     }
-    
+
     return { status: 'OK', totalSynced };
 
   } catch (err: any) {
@@ -146,7 +145,7 @@ export const runPendingSync = async () => {
 export const runReplicationLog = async () => {
   let centralConnection: Connection | undefined;
   let replicaConnection: Connection | undefined;
-  
+
   try {
     // get all pending replication tasks from Node 0
     centralConnection = await getConnection('central');
@@ -154,7 +153,7 @@ export const runReplicationLog = async () => {
     const [logs] = await centralConnection.execute(
       "SELECT * FROM REPLICATION_LOG WHERE status = 'pending'"
     );
-    
+
     const pendingLogs = logs as ReplicationLog[];
     if (pendingLogs.length === 0) {
       await centralConnection.end(); // Close connection early
@@ -168,15 +167,15 @@ export const runReplicationLog = async () => {
     for (const log of pendingLogs) {
       try {
         const targetNode = log.target_node as NodeName;
-        
+
         // connect to the (now online) replica node
         replicaConnection = await getConnection(targetNode);
-        
-        // handle all 3 query types 
+
+        // handle all 3 query types
         if (log.query_text === 'REPLICATE_CREATE_ORDER') {
           const { orderNumber, orderData, totalAmount } = JSON.parse(log.query_params);
           await executeWriteTransaction(replicaConnection, orderNumber, orderData, totalAmount);
-        } 
+        }
         else if (log.query_text === 'REPLICATE_UPDATE_ORDER') {
           const { orderNumber, orderData, totalAmount } = JSON.parse(log.query_params);
           await executeUpdateTransaction(replicaConnection, orderNumber, orderData, totalAmount);
@@ -185,13 +184,13 @@ export const runReplicationLog = async () => {
           const { orderNumber } = JSON.parse(log.query_params);
           await executeDeleteTransaction(replicaConnection, orderNumber);
         }
-        
+
         // if successful, update the log on Node 0 to 'completed
         await centralConnection.execute(
           "UPDATE REPLICATION_LOG SET status = 'completed' WHERE log_id = ?",
           [log.log_id]
         );
-        
+
         totalReplicated++;
 
       } catch (jobErr: any) {
@@ -201,7 +200,7 @@ export const runReplicationLog = async () => {
         if (replicaConnection) await replicaConnection.end();
       }
     }
-    
+
     return { status: 'OK', totalReplicated };
 
   } catch (err: any) {

@@ -12,7 +12,7 @@ export const logReplicationFailure = async (logData: ReplicationLogData) => {
   try {
     // log goes to the central node.
     connection = await getConnection('central');
-    
+
     await connection.execute(
       `INSERT INTO REPLICATION_LOG (target_node, status, query_text, query_params)
        VALUES (?, ?, ?, ?)`,
@@ -39,7 +39,7 @@ export const logPendingSync = async (node: 'node1' | 'node2', logData: PendingSy
   try {
     // log goes to the local node that handled the failover.
     connection = await getConnection(node);
-    
+
     await connection.execute(
       `INSERT INTO PENDING_SYNC (origin_node, delivery_date, order_data)
        VALUES (?, ?, ?)`,
@@ -64,7 +64,7 @@ export const logEmergencyPendingSync = async (emergencyNode: 'node1' | 'node2', 
   try {
     // log goes to the only node that is still online.
     connection = await getConnection(emergencyNode);
-    
+
     await connection.execute(
       `INSERT INTO PENDING_SYNC (origin_node, delivery_date, order_data)
        VALUES (?, ?, ?)`,

@@ -26,12 +26,31 @@ interface DatabaseOrderItem {
   price: number;
 }
 
+// Mapping functions to convert database rows to API format
+export const mapDatabaseOrderToAPI = (dbOrder: DatabaseOrder, totalAmount?: number): Order => {
+  return {
+    ORDER_NUMBER: dbOrder.orderNumber,
+    CUSTOMER_NUMBER: dbOrder.userId.toString(),
+    ORDER_DATE: dbOrder.createdAt,
+    DELIVERY_DATE: dbOrder.deliveryDate,
+    TOTAL_AMOUNT: totalAmount || 0, // Will be calculated separately
+  };
+};
+
+export const mapDatabaseProductToAPI = (dbProduct: DatabaseProduct): Product => {
+  return {
+    PRODUCT_NUMBER: dbProduct.productNumber || dbProduct.id.toString(),
+    PRODUCT_NAME: dbProduct.name,
+    UNIT_PRICE: dbProduct.price,
+  };
+};
+
 // Convert API OrderFormData to database format
 export const mapAPIOrderToDatabase = (orderData: OrderFormData) => {
   return {
     orderNumber: orderData.orderNumber,
+    userId: parseInt(orderData.customerNumber),
     deliveryDate: orderData.deliveryDate,
-    // userId and deliveryRiderId will be set from hardcoded data in db-write.ts
     // createdAt will be set by MySQL DEFAULT
   };
 };
@@ -49,7 +68,7 @@ export const generateOrderNumber = (year: '2024' | '2025'): string => {
   return `${prefix}-${timestamp}`;
 };
 
-// Validate order data
+// Validate order data - Note: customerNumber is not required from frontend (injected by API)
 export const validateOrderData = (orderData: any): { isValid: boolean; errors: string[] } => {
   const errors: string[] = [];
 
@@ -87,13 +106,6 @@ export interface APIResponse<T = any> {
   failover_info?: {
     used_node: string;
     attempts: string[];
-    pagination?: {
-      page: number;
-      limit: number;
-      total: number;
-      totalPages: number;
-      hasMore: boolean;
-    };
   };
   error?: string;
   details?: any;
@@ -102,17 +114,7 @@ export interface APIResponse<T = any> {
 export const createSuccessResponse = <T>(
   data: T,
   message?: string,
-  failoverInfo?: {
-    used_node: string;
-    attempts: string[];
-    pagination?: {
-      page: number;
-      limit: number;
-      total: number;
-      totalPages: number;
-      hasMore: boolean;
-    };
-  }
+  failoverInfo?: { used_node: string; attempts: string[] }
 ): APIResponse<T> => {
   return {
     success: true,
