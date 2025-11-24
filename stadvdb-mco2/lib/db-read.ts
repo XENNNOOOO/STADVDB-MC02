@@ -1,5 +1,5 @@
 import { getConnection } from './connections';
-import type { Connection } from 'mysql2/promise';
+import type { Connection, RowDataPacket } from 'mysql2/promise'; 
 import type { Order, Product, NodeName } from './types';
 
 /**
@@ -14,18 +14,14 @@ export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> =
 
   let connection: Connection | undefined;
   
-  // loop through the path until one succeeds
   for (const node of readPath) {
     try {
       console.log(`READ [${year}]: Trying Node ${node}...`);
       connection = await getConnection(node); 
       
-      // READ UNCOMMITTED
-      // since this is a heavy aggregation query, 
-      // prevents us from locking rows and blocking writers 
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
       
-      const [rows] = await connection.execute(
+      const [rows] = await connection.execute<RowDataPacket[]>(
         `SELECT 
             o.orderNumber as ORDER_NUMBER, 
             o.userId as CUSTOMER_NUMBER,
@@ -41,17 +37,17 @@ export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> =
       );
       
       await connection.end();
+      
       console.log(`READ [${year}]: Success on Node ${node}. Fetched ${rows.length} orders.`);
+      
       return rows as Order[];
     
     } catch (err: any) {
       console.warn(`READ: Node ${node} failed. (${err.message}). Failing over...`);
       if (connection) await connection.end();
-      // loop continues to the next node
     }
   }
 
-  // if all 3 nodes in the path have failed
   throw new Error(`All nodes for ${year} data are unavailable.`);
 };
 
