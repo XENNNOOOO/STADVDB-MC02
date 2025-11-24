@@ -420,8 +420,8 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
 
   const calculateTotal = () => {
     return formData.items.reduce((total, item) => {
-      const product = products.find((p) => p.id === item.productId);
-      return total + (product?.price || 0) * item.quantity;
+      const product = products.find((p) => p.PRODUCT_NUMBER === item.productId);
+      return total + (product?.UNIT_PRICE || 0) * item.quantity;
     }, 0);
   };
 
@@ -670,8 +670,8 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                     >
                       <option value="">Select a product</option>
                       {products.map((product) => (
-                        <option key={product.id} value={product.id}>
-                          {product.name} - ${product.price.toFixed(2)}
+                        <option key={product.PRODUCT_NUMBER} value={product.PRODUCT_NUMBER}>
+                          {product.PRODUCT_NAME} - ${product.UNIT_PRICE?.toFixed(2) || '0.00'}
                         </option>
                       ))}
                     </select>
@@ -694,7 +694,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                   <div className="w-28">
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Subtotal</label>
                     <div className="px-3 py-2 bg-slate-100 rounded-lg text-slate-900 font-bold text-sm">
-                      ${((products.find((p) => p.id === item.productId)?.price || 0) * item.quantity).toFixed(2)}
+                      ${((products.find((p) => p.PRODUCT_NUMBER === item.productId)?.UNIT_PRICE || 0) * item.quantity).toFixed(2)}
                     </div>
                   </div>
 

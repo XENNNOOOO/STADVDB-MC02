@@ -3,10 +3,14 @@ import type { Connection, RowDataPacket } from 'mysql2/promise';
 import type { Order, Product, NodeName } from './types';
 
 /**
- * READ (All Orders for a Year)
+ * READ (Orders for a Year with Pagination)
  * Implements 3-step failover logic based on your spec.
  */
-export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> => {
+export const getOrdersByYear = async (
+  year: '2024' | '2025',
+  limit?: number,
+  offset?: number
+): Promise<{ orders: Order[], total: number }> => {
   const readPath: NodeName[] =
     year === '2025'
       ? ['node1', 'central', 'node2']
@@ -21,6 +25,19 @@ export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> =
 
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
 
+      // First get total count
+      const [countResult] = await connection.execute<RowDataPacket[]>(
+        `SELECT COUNT(DISTINCT o.id) as total_count
+         FROM Orders o
+         WHERE YEAR(o.deliveryDate) = ?`,
+        [year]
+      );
+      const total = countResult[0].total_count;
+
+      // Then get paginated orders with dynamic LIMIT using string interpolation to avoid parameter binding issues
+      const actualLimit = limit || 50;
+      const actualOffset = offset || 0;
+
       const [rows] = await connection.execute<RowDataPacket[]>(
         `SELECT
             o.orderNumber as ORDER_NUMBER,
@@ -32,15 +49,17 @@ export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> =
          LEFT JOIN OrderItems oi ON o.id = oi.OrderId
          LEFT JOIN Products p ON oi.ProductId = p.id
          WHERE YEAR(o.deliveryDate) = ?
-         GROUP BY o.id, o.orderNumber, o.userId, o.createdAt, o.deliveryDate`,
+         GROUP BY o.id, o.orderNumber, o.userId, o.createdAt, o.deliveryDate
+         ORDER BY o.createdAt DESC
+         LIMIT ${actualLimit} OFFSET ${actualOffset}`,
         [year]
       );
 
       await connection.end();
 
-      console.log(`READ [${year}]: Success on Node ${node}. Fetched ${rows.length} orders.`);
+      console.log(`READ [${year}]: Success on Node ${node}. Fetched ${rows.length} orders (total: ${total}).`);
 
-      return rows as Order[];
+      return { orders: rows as Order[], total };
 
     } catch (err: any) {
       console.warn(`READ: Node ${node} failed. (${err.message}). Failing over...`);
