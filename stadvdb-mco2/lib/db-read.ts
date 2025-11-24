@@ -7,11 +7,10 @@ import type { Order, Product, NodeName } from './types';
  * Implements 3-step failover logic based on your spec.
  */
 export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> => {
-  // determine the correct 3-step read path based on the year
   const readPath: NodeName[] =
     year === '2025'
-      ? ['node1', 'central', 'node2'] // Spec: Try Node 1 (Primary) -> Node 0 (Master) -> Node 2 (Backup)
-      : ['node2', 'central', 'node1']; // Spec: Try Node 2 (Primary) -> Node 0 (Master) -> Node 1 (Backup)
+      ? ['node1', 'central', 'node2'] 
+      : ['node2', 'central', 'node1']; 
 
   let connection: Connection | undefined;
   
@@ -21,22 +20,28 @@ export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> =
       console.log(`READ [${year}]: Trying Node ${node}...`);
       connection = await getConnection(node); 
       
-      // fastest isolation for high-concurrency reads
+      // READ UNCOMMITTED
+      // since this is a heavy aggregation query, 
+      // prevents us from locking rows and blocking writers 
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
       
-      // query works on all 3 nodes
-      // Use ? placeholders and YEAR() for MySQL
-      // Map database columns to API format
       const [rows] = await connection.execute(
-        `SELECT orderNumber as ORDER_NUMBER, userId as CUSTOMER_NUMBER,
-                createdAt as ORDER_DATE, deliveryDate as DELIVERY_DATE,
-                0 as TOTAL_AMOUNT
-         FROM Orders WHERE YEAR(deliveryDate) = ?`,
+        `SELECT 
+            o.orderNumber as ORDER_NUMBER, 
+            o.userId as CUSTOMER_NUMBER,
+            o.createdAt as ORDER_DATE, 
+            o.deliveryDate as DELIVERY_DATE,
+            COALESCE(SUM(oi.quantity * p.price), 0) as TOTAL_AMOUNT
+         FROM Orders o
+         LEFT JOIN OrderItems oi ON o.id = oi.OrderId
+         LEFT JOIN Products p ON oi.ProductId = p.id
+         WHERE YEAR(o.deliveryDate) = ?
+         GROUP BY o.id, o.orderNumber, o.userId, o.createdAt, o.deliveryDate`,
         [year]
       );
       
       await connection.end();
-      console.log(`READ [${year}]: Success on Node ${node}.`);
+      console.log(`READ [${year}]: Success on Node ${node}. Fetched ${rows.length} orders.`);
       return rows as Order[];
     
     } catch (err: any) {
@@ -50,58 +55,87 @@ export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> =
   throw new Error(`All nodes for ${year} data are unavailable.`);
 };
 
+
 /**
  * READ (Single Order)
  * takes the 'year' as a signal from the API 
  * directed 3-step failover path.
  */
-export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<Order | null> => {
+export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<any | null> => {
   
-  //  3-step failover path based on the signal (year)
   const readPath: NodeName[] =
     year === '2025'
-      ? ['node1', 'central', 'node2']   // 2025 Path
-      : ['node2', 'central', 'node1'];  // 2024 Path
+      ? ['node1', 'central', 'node2'] 
+      : ['node2', 'central', 'node1']; 
   
   let connection: Connection | undefined;
   
-  // loop through the chosen path
   for (const node of readPath) {
     try {
       console.log(`READ [${id}]: Trying Node ${node}...`);
       connection = await getConnection(node);
       
-      // concurrency: read committed to prevent dirty reads
+      // Use READ COMMITTED for consistent reads without locking gaps
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED;');
       
-      const [rows] = await connection.execute(
-        `SELECT orderNumber as ORDER_NUMBER, userId as CUSTOMER_NUMBER,
-                createdAt as ORDER_DATE, deliveryDate as DELIVERY_DATE,
-                0 as TOTAL_AMOUNT
-         FROM Orders WHERE orderNumber = ?`,
+      // We JOIN tables to get Order info, Item info, and Product Price info
+      const [rows]: any[] = await connection.execute(
+        `SELECT 
+           o.orderNumber, 
+           o.userId, 
+           o.deliveryDate, 
+           o.createdAt,
+           oi.quantity,
+           p.name as productName,
+           p.price as unitPrice
+         FROM Orders o
+         LEFT JOIN OrderItems oi ON o.id = oi.OrderId
+         LEFT JOIN Products p ON oi.ProductId = p.id
+         WHERE o.orderNumber = ?`,
         [id]
       );
       
       await connection.end();
       
-      const order = (rows as Order[])[0] || null;
-      
-      // ff we found the order on this node, return it
-      if (order) {
-        console.log(`READ [${id}]: Found on Node ${node}.`);
-        return order;
-      }
-      
-      // if order is not found, try the next node
+      // If no rows returned, order doesn't exist
+      if (rows.length === 0) continue; 
+
+      console.log(`READ [${id}]: Found on Node ${node}. Parsing...`);
+
+      // TRANSFORM FLAT ROWS INTO NESTED OBJECT
+      // Because of the JOIN, we get 1 row per item. We need to combine them.
+      const order = {
+        orderNumber: rows[0].orderNumber,
+        customerNumber: rows[0].userId,
+        orderDate: rows[0].createdAt,
+        deliveryDate: rows[0].deliveryDate,
+        totalAmount: 0, // We will calculate this
+        items: [] as any[]
+      };
+
+      // Loop through rows to build the items array and sum the total
+      rows.forEach((row: any) => {
+        if (row.productName) { // check if items exist
+          const lineTotal = row.quantity * row.unitPrice;
+          order.totalAmount += lineTotal;
+          
+          order.items.push({
+            productName: row.productName,
+            quantity: row.quantity,
+            unitPrice: row.unitPrice,
+            lineTotal: lineTotal
+          });
+        }
+      });
+
+      return order;
       
     } catch (err: any) {
-      // this node is down. log it and continue to the next one.
       console.warn(`READ: Node ${node} failed. (${err.message}). skipping...`);
       if (connection) await connection.end();
     }
   }
 
-  // if we searched all 3 nodes (online) and didn't find it
   console.error(`Order ${id} not found on any available node.`);
   return null;
 };
