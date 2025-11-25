@@ -23,6 +23,7 @@ const parseOrderItems = (rows: any[]): Order[] => {
       CUSTOMER_NUMBER: row.CUSTOMER_NUMBER,
       ORDER_DATE: row.ORDER_DATE,
       DELIVERY_DATE: row.DELIVERY_DATE,
+      DELIVERY_RIDER_ID: row.DELIVERY_RIDER_ID,
       TOTAL_AMOUNT: row.TOTAL_AMOUNT || 0,
       items: cleanItems 
     } as unknown as Order;
@@ -57,6 +58,7 @@ export const getAllOrders = async (
         `SELECT
             o.orderNumber as ORDER_NUMBER,
             o.userId as CUSTOMER_NUMBER,
+            o.deliveryRiderId as DELIVERY_RIDER_ID,  -- <--- ADDED COLUMN
             o.createdAt as ORDER_DATE,
             o.deliveryDate as DELIVERY_DATE,
             COALESCE(SUM(oi.quantity * p.price), 0) as TOTAL_AMOUNT,
@@ -70,7 +72,7 @@ export const getAllOrders = async (
          FROM Orders o
          LEFT JOIN OrderItems oi ON o.id = oi.OrderId
          LEFT JOIN Products p ON oi.ProductId = p.id
-         GROUP BY o.id, o.orderNumber, o.userId, o.createdAt, o.deliveryDate
+         GROUP BY o.id, o.orderNumber, o.userId, o.deliveryRiderId, o.createdAt, o.deliveryDate
          ORDER BY o.createdAt DESC
          LIMIT ${actualLimit} OFFSET ${actualOffset}`
       );
@@ -126,6 +128,7 @@ export const getOrdersByYear = async (
         `SELECT
             o.orderNumber as ORDER_NUMBER,
             o.userId as CUSTOMER_NUMBER,
+            o.deliveryRiderId as DELIVERY_RIDER_ID, -- <--- ADDED COLUMN
             o.createdAt as ORDER_DATE,
             o.deliveryDate as DELIVERY_DATE,
             COALESCE(SUM(oi.quantity * p.price), 0) as TOTAL_AMOUNT,
@@ -140,7 +143,7 @@ export const getOrdersByYear = async (
          LEFT JOIN OrderItems oi ON o.id = oi.OrderId
          LEFT JOIN Products p ON oi.ProductId = p.id
          WHERE YEAR(o.deliveryDate) = ?
-         GROUP BY o.id, o.orderNumber, o.userId, o.createdAt, o.deliveryDate
+         GROUP BY o.id, o.orderNumber, o.userId, o.deliveryRiderId, o.createdAt, o.deliveryDate
          ORDER BY o.createdAt DESC
          LIMIT ${actualLimit} OFFSET ${actualOffset}`,
         [year]
@@ -162,6 +165,7 @@ export const getOrdersByYear = async (
   throw new Error(`All nodes for ${year} data are unavailable.`);
 };
 
+
 export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<any | null> => {
   const readPath: NodeName[] =
     year === '2025'
@@ -180,6 +184,7 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
         `SELECT
            o.orderNumber,
            o.userId,
+           o.deliveryRiderId, 
            o.deliveryDate,
            o.createdAt,
            oi.quantity,
@@ -200,6 +205,8 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
       const order = {
         orderNumber: rows[0].orderNumber,
         customerNumber: rows[0].userId,
+        // Added Mapping Here
+        deliveryRiderId: rows[0].deliveryRiderId, 
         orderDate: rows[0].createdAt,
         deliveryDate: rows[0].deliveryDate,
         totalAmount: 0,
