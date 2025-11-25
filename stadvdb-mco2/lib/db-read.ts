@@ -2,9 +2,65 @@ import { getConnection } from './connections';
 import type { Connection, RowDataPacket } from 'mysql2/promise';
 import type { Order, Product, NodeName } from './types';
 
+
+export const getAllOrders = async (
+  limit?: number,
+  offset?: number
+): Promise<{ orders: Order[], total: number }> => {
+  const readPath: NodeName[] = ['central', 'node1', 'node2'];
+  
+  let connection: Connection | undefined;
+
+  for (const node of readPath) {
+    try {
+      console.log(`READ [ALL]: Trying Node ${node}...`);
+      connection = await getConnection(node);
+
+      // READ UNCOMMITTED for the list view to prevent locking
+      await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
+
+      const [countResult] = await connection.execute<RowDataPacket[]>(
+        `SELECT COUNT(DISTINCT id) as total_count FROM Orders`
+      );
+      const total = countResult[0].total_count;
+
+      const actualLimit = limit || 50;
+      const actualOffset = offset || 0;
+
+      const [rows] = await connection.execute<RowDataPacket[]>(
+        `SELECT
+            o.orderNumber as ORDER_NUMBER,
+            o.userId as CUSTOMER_NUMBER,
+            o.createdAt as ORDER_DATE,
+            o.deliveryDate as DELIVERY_DATE,
+            COALESCE(SUM(oi.quantity * p.price), 0) as TOTAL_AMOUNT
+         FROM Orders o
+         LEFT JOIN OrderItems oi ON o.id = oi.OrderId
+         LEFT JOIN Products p ON oi.ProductId = p.id
+         GROUP BY o.id, o.orderNumber, o.userId, o.createdAt, o.deliveryDate
+         ORDER BY o.createdAt DESC
+         LIMIT ${actualLimit} OFFSET ${actualOffset}`
+      );
+
+      await connection.end();
+      console.log(`READ [ALL]: Success on Node ${node}. Fetched ${rows.length} orders (total: ${total}).`);
+
+      return { orders: rows as Order[], total };
+
+    } catch (err: any) {
+      console.warn(`READ [ALL]: Node ${node} failed. (${err.message}). Failing over...`);
+      if (connection) await connection.end();
+      // Continue to the next node in the path
+    }
+  }
+
+  throw new Error("All nodes are unavailable. Cannot fetch complete order list.");
+};
+
+
 /**
- * READ (Orders for a Year with Pagination)
- * Implements 3-step failover logic based on your spec.
+ * READ (Orders for a Year)
+ * Implements 3-step failover logic
  */
 export const getOrdersByYear = async (
   year: '2024' | '2025',
@@ -34,7 +90,6 @@ export const getOrdersByYear = async (
       );
       const total = countResult[0].total_count;
 
-      // Then get paginated orders with dynamic LIMIT using string interpolation to avoid parameter binding issues
       const actualLimit = limit || 50;
       const actualOffset = offset || 0;
 
@@ -90,7 +145,7 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
       console.log(`READ [${id}]: Trying Node ${node}...`);
       connection = await getConnection(node);
 
-      // Use READ COMMITTED for consistent reads without locking gaps
+      // READ COMMITTED for consistent reads without locking gaps
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED;');
 
       // We JOIN tables to get Order info, Item info, and Product Price info
