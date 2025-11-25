@@ -416,29 +416,118 @@ interface OrderModalProps {
 function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderModalProps) {
   const [formData, setFormData] = useState({
     deliveryDate: order?.DELIVERY_DATE ? new Date(order.DELIVERY_DATE).toISOString().split('T')[0] : '',
-    items: order?.items || [{ productId: 1, quantity: 2 }],
+    items: order?.items || [{ productNumber: '', quantity: 1 }],
   });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const action = mode === 'create' ? 'Creating' : 'Updating';
-    // Logic for updating items needs to match the structure expected by API
-    // Mapping productId (from UI) back to PRODUCT_NUMBER (for logic) is key
-    alert(`[UI-ONLY] ${action} order:\n${JSON.stringify(formData, null, 2)}`);
-    onClose();
+    setLoading(true);
+    setError(null);
+
+    try {
+      // Validate form data
+      if (!formData.deliveryDate) {
+        throw new Error('Delivery date is required');
+      }
+      if (formData.items.length === 0) {
+        throw new Error('At least one item is required');
+      }
+
+      // Validate that all items have products selected
+      for (const item of formData.items) {
+        if (!item.productNumber) {
+          throw new Error('Please select a product for all items');
+        }
+      }
+
+      const orderData = {
+        deliveryDate: formData.deliveryDate,
+        items: formData.items.map(item => ({
+          productNumber: item.productNumber,
+          quantity: item.quantity
+        }))
+      };
+
+      const url = mode === 'create' ? '/api/orders' : `/api/orders/${order?.ORDER_NUMBER}`;
+      const method = mode === 'create' ? 'POST' : 'PUT';
+
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(orderData),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to save order');
+      }
+
+      const result = await response.json();
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to save order');
+      }
+
+      // Success - close modal and refresh the order list
+      onClose();
+
+      // Trigger a page reload to refresh the order list
+      window.location.reload();
+
+    } catch (err: any) {
+      console.error('Error saving order:', err);
+      setError(err.message || 'Failed to save order');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleDelete = () => {
-    alert(`[UI-ONLY] Deleting order ${order?.ORDER_NUMBER}`);
-    onClose();
+  const handleDelete = async () => {
+    if (!order) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`/api/orders/${order.ORDER_NUMBER}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to delete order');
+      }
+
+      const result = await response.json();
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to delete order');
+      }
+
+      // Success - close modal and refresh the order list
+      onClose();
+
+      // Trigger a page reload to refresh the order list
+      window.location.reload();
+
+    } catch (err: any) {
+      console.error('Error deleting order:', err);
+      setError(err.message || 'Failed to delete order');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const calculateTotal = () => {
     return formData.items.reduce((total: number, item: any) => {
-      // Handle both cases: creating new (has productId) or viewing existing (has unitPrice in item or needs lookup)
+      // Handle both cases: creating new (has productNumber) or viewing existing (has unitPrice in item or needs lookup)
       let price = item.unitPrice;
       if (!price) {
-          const product = products.find((p) => p.PRODUCT_NUMBER == item.productId);
+          const product = products.find((p) => p.PRODUCT_NUMBER == item.productNumber);
           price = product?.UNIT_PRICE || 0;
       }
       return total + price * item.quantity;
@@ -448,7 +537,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
   const addItem = () => {
     setFormData({
       ...formData,
-      items: [...formData.items, { productId: 0, quantity: 1 }],
+      items: [...formData.items, { productNumber: '', quantity: 1 }],
     });
   };
 
@@ -459,7 +548,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
     });
   };
 
-  const updateItem = (index: number, field: 'productId' | 'quantity', value: string | number) => {
+  const updateItem = (index: number, field: 'productNumber' | 'quantity', value: string | number) => {
     const newItems = [...formData.items];
     newItems[index] = { ...newItems[index], [field]: value };
     setFormData({ ...formData, items: newItems });
@@ -611,6 +700,13 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             <p className="text-sm text-slate-600">
               This will permanently remove the order from all nodes in the distributed database. This action cannot be undone.
             </p>
+
+            {/* Error message */}
+            {error && (
+              <div className="mt-4 p-4 bg-red-50 rounded-lg border border-red-200">
+                <p className="text-red-600 text-sm font-medium">{error}</p>
+              </div>
+            )}
           </div>
 
           {/* Footer Actions */}
@@ -623,10 +719,11 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             </button>
             <button
               onClick={handleDelete}
-              className="flex-1 px-5 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all font-semibold flex items-center justify-center gap-2"
+              disabled={loading}
+              className="flex-1 px-5 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all font-semibold flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Trash2 size={18} />
-              Delete
+              {loading ? 'Deleting...' : 'Delete'}
             </button>
           </div>
         </div>
@@ -708,8 +805,8 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                   <div className="flex-1 relative">
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Product</label>
                     <select
-                      value={item.productId || (item.productName ? products.find(p => p.PRODUCT_NAME === item.productName)?.PRODUCT_NUMBER : "")}
-                      onChange={(e) => updateItem(index, 'productId', parseInt(e.target.value) || 0)}
+                      value={item.productNumber || (item.productName ? products.find(p => p.PRODUCT_NAME === item.productName)?.PRODUCT_NUMBER : "")}
+                      onChange={(e) => updateItem(index, 'productNumber', e.target.value)}
                       className="w-full appearance-none px-3 py-2 pr-10 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm font-medium bg-white cursor-pointer text-slate-700"
                     >
                       <option value="">Select a product</option>
@@ -738,7 +835,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                   <div className="w-28">
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Subtotal</label>
                     <div className="px-3 py-2 bg-slate-100 rounded-lg text-slate-900 font-bold text-sm">
-                      ${((products.find((p) => p.PRODUCT_NUMBER == item.productId)?.UNIT_PRICE || item.unitPrice || 0) * item.quantity).toFixed(2)}
+                      ${((products.find((p) => p.PRODUCT_NUMBER == item.productNumber)?.UNIT_PRICE || item.unitPrice || 0) * item.quantity).toFixed(2)}
                     </div>
                   </div>
 
@@ -763,20 +860,31 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             </div>
           </div>
 
+          {/* Error message */}
+          {error && (
+            <div className="px-8 pb-4">
+              <div className="p-4 bg-red-50 rounded-lg border border-red-200">
+                <p className="text-red-600 text-sm font-medium">{error}</p>
+              </div>
+            </div>
+          )}
+
           {/* Footer Actions */}
-          <div className="flex gap-3 pt-2">
+          <div className="flex gap-3 pt-2 px-8 pb-8">
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 px-6 py-3 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition-all font-semibold"
+              disabled={loading}
+              className="flex-1 px-6 py-3 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition-all font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="flex-1 px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all font-semibold"
+              disabled={loading}
+              className="flex-1 px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {mode === 'create' ? 'Create Order' : 'Update Order'}
+              {loading ? 'Saving...' : (mode === 'create' ? 'Create Order' : 'Update Order')}
             </button>
           </div>
         </form>

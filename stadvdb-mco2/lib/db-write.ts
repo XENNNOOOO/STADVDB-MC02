@@ -23,12 +23,14 @@ const calculateTotalAmount = async (
     // create a price map for efficient lookups
     const priceMap = new Map<string, number>();
     products.forEach(p => {
-      priceMap.set(p.PRODUCT_NUMBER, p.UNIT_PRICE);
+      // Convert product number to string for consistent lookup
+      priceMap.set(p.PRODUCT_NUMBER.toString(), p.UNIT_PRICE);
     });
 
     // calculate the total
     for (const item of items) {
-      const price = priceMap.get(item.productNumber);
+      // Ensure productNumber is treated as string for lookup
+      const price = priceMap.get(item.productNumber.toString());
       if (!price) {
         throw new Error(`Invalid product number: ${item.productNumber}`);
       }
@@ -304,17 +306,20 @@ export const executeWriteTransaction = async (
     const year = new Date(orderData.deliveryDate).getFullYear() >= 2025 ? '2025' : '2024';
     const hardcodedUser = getUserByYear(year);
     const hardcodedRider = getRiderByYear(year);
-    await connection.execute(
-      `INSERT INTO Orders (orderNumber, userId, deliveryRiderId, createdAt, deliveryDate, totalAmount)
+    const [orderResult] = await connection.execute(
+      `INSERT INTO Orders (orderNumber, userId, deliveryRiderId, deliveryDate, createdAt, updatedAt)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [orderNumber, hardcodedUser.id, hardcodedRider.id, new Date(), orderData.deliveryDate, totalAmount]
+      [orderNumber, hardcodedUser.id, hardcodedRider.id, orderData.deliveryDate, new Date(), new Date()]
     );
+
+    // Get the inserted order ID
+    const orderId = (orderResult as any).insertId;
 
     // Insert into Details
     for (const item of orderData.items) {
       await connection.execute(
-        `INSERT INTO OrderItems (orderNumber, productId, quantity) VALUES (?, ?, ?)`,
-        [orderNumber, item.productNumber, item.quantity]
+        `INSERT INTO OrderItems (OrderId, ProductId, quantity, notes, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+        [orderId, item.productNumber, item.quantity, null, new Date(), new Date()]
       );
     }
 
@@ -365,22 +370,29 @@ export const executeUpdateTransaction = async (
          userId = ?,
          deliveryRiderId = ?,
          deliveryDate = ?,
-         totalAmount = ?
+         updatedAt = ?
        WHERE orderNumber = ?`,
-      [hardcodedUser.id, hardcodedRider.id, orderData.deliveryDate, totalAmount, orderNumber]
+      [hardcodedUser.id, hardcodedRider.id, orderData.deliveryDate, new Date(), orderNumber]
     );
+
+    // Get the order ID for foreign key reference
+    const [orderRows] = await connection.execute(
+      `SELECT id FROM Orders WHERE orderNumber = ?`,
+      [orderNumber]
+    );
+    const orderId = (orderRows as any[])[0]?.id;
 
     // delete old details
     await connection.execute(
-      `DELETE FROM OrderItems WHERE orderNumber = ?`,
-      [orderNumber]
+      `DELETE FROM OrderItems WHERE OrderId = ?`,
+      [orderId]
     );
 
     // insert new details
     for (const item of orderData.items) {
       await connection.execute(
-        `INSERT INTO OrderItems (orderNumber, productId, quantity) VALUES (?, ?, ?)`,
-        [orderNumber, item.productNumber, item.quantity]
+        `INSERT INTO OrderItems (OrderId, ProductId, quantity, notes, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+        [orderId, item.productNumber, item.quantity, null, new Date(), new Date()]
       );
     }
 
@@ -419,11 +431,20 @@ export const executeDeleteTransaction = async (
       return;
     }
 
-    // must delete from details first due to foreign key constraints
-    await connection.execute(
-      `DELETE FROM OrderItems WHERE orderNumber = ?`,
+    // Get the order ID for foreign key reference
+    const [orderRows] = await connection.execute(
+      `SELECT id FROM Orders WHERE orderNumber = ?`,
       [orderNumber]
     );
+    const orderId = (orderRows as any[])[0]?.id;
+
+    // must delete from details first due to foreign key constraints
+    if (orderId) {
+      await connection.execute(
+        `DELETE FROM OrderItems WHERE OrderId = ?`,
+        [orderId]
+      );
+    }
     await connection.execute(
       `DELETE FROM Orders WHERE orderNumber = ?`,
       [orderNumber]
