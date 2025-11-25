@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getOrdersByYear } from '@/lib/db-read';
+import { getOrdersByYear, getAllOrders } from '@/lib/db-read'; // <--- Added getAllOrders import
 import { createOrder } from '@/lib/db-write';
 import {
   createSuccessResponse,
@@ -11,7 +11,7 @@ import {
 import { getUserByYear } from '@/lib/hardcoded-data';
 import type { OrderFormData } from '@/lib/types';
 
-// GET /api/orders - Read orders by year with 3-step failover and pagination
+// GET /api/orders - Read orders (All or by Year) with failover and pagination
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -19,26 +19,35 @@ export async function GET(request: NextRequest) {
     const pageParam = searchParams.get('page');
     const limitParam = searchParams.get('limit');
 
-    // Default to current year if not specified
-    const year: '2024' | '2025' = yearParam === '2024' ? '2024' : '2025';
-
     // Pagination parameters with defaults
     const page = Math.max(1, parseInt(pageParam || '1'));
     const limit = Math.min(100, Math.max(1, parseInt(limitParam || '50'))); // Min 1, max 100
     const offset = (page - 1) * limit;
 
-    console.log(`API: GET /api/orders?year=${year}&page=${page}&limit=${limit} - Starting paginated read...`);
+    let result;
+    let contextMsg;
 
-    const { orders, total } = await getOrdersByYear(year, limit, offset);
+    // LOGIC: Check if specific year is requested, otherwise fetch ALL
+    if (yearParam === '2024' || yearParam === '2025') {
+      console.log(`API: GET /api/orders?year=${yearParam}&page=${page}&limit=${limit} - Starting paginated read for ${yearParam}...`);
+      result = await getOrdersByYear(yearParam, limit, offset);
+      contextMsg = `Retrieved ${result.orders.length} orders for year ${yearParam}`;
+    } else {
+      // If no year is specified (or invalid), fetch ALL orders from Central
+      console.log(`API: GET /api/orders?page=${page}&limit=${limit} - Starting paginated read for ALL YEARS...`);
+      result = await getAllOrders(limit, offset);
+      contextMsg = `Retrieved ${result.orders.length} orders (All Years)`;
+    }
+
+    const { orders, total } = result;
     const totalPages = Math.ceil(total / limit);
 
     return NextResponse.json(
       createSuccessResponse(
         orders,
-        `Retrieved ${orders.length} orders for year ${year} (page ${page} of ${totalPages})`,
+        `${contextMsg} (page ${page} of ${totalPages})`,
         {
-          used_node: 'Determined by failover logic',
-          attempts: ['See server logs'],
+          used_node: yearParam ? 'Determined by failover logic' : 'Central (or failover)',
           pagination: {
             page,
             limit,
@@ -57,7 +66,7 @@ export async function GET(request: NextRequest) {
     // Check if it's a "all nodes unavailable" error
     if (error.message.includes('unavailable')) {
       return NextResponse.json(
-        createErrorResponse('All database nodes are unavailable', error.message),
+        createErrorResponse('Database nodes are unavailable', error.message),
         { status: 503 }
       );
     }
