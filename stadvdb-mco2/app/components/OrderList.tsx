@@ -492,9 +492,8 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             <div>
               <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Customer Information</h4>
               <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
-                <p className="text-sm text-slate-600 mb-1">Customer ID (Auto-assigned)</p>
+                <p className="text-sm text-slate-600 mb-1">Customer ID</p>
                 <p className="text-lg font-bold text-slate-900">{order?.CUSTOMER_NUMBER}</p>
-                <p className="text-xs text-slate-500 mt-1">Automatically assigned based on delivery year</p>
               </div>
             </div>
 
@@ -522,9 +521,8 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                 </div>
                 {/* Rider ID Added back to modal */}
                 <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
-                  <p className="text-sm text-slate-600 mb-1">Delivery Rider ID (Auto-assigned)</p>
+                  <p className="text-sm text-slate-600 mb-1">Delivery Rider ID</p>
                   <p className="text-lg font-bold text-slate-900">{order?.DELIVERY_RIDER_ID || 'Not Assigned'}</p>
-                  <p className="text-xs text-slate-500 mt-1">Automatically assigned based on delivery year</p>
                 </div>
               </div>
             </div>
@@ -680,9 +678,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                   />
                 </div>
                 <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-                  <p className="text-sm text-blue-700 font-medium">
-                    📋 Customer and rider information will be automatically assigned based on the delivery year.
-                  </p>
+
                 </div>
               </div>
             </div>
