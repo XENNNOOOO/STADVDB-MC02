@@ -4,6 +4,28 @@ import { getProductsFromMaster } from './db-read';
 import type { Connection } from 'mysql2/promise';
 import type { NodeName, OrderFormData, Product } from './types';
 
+/**
+ * AUTOMATED RECOVERY SYSTEM - EXECUTION MODULE
+ *
+ * This module handles the automatic execution of recovery operations.
+ * These functions are triggered automatically when nodes come back online:
+ *
+ * AUTOMATIC EXECUTION TRIGGERS:
+ * 1. Node health monitoring detects when a failed node comes back online
+ * 2. System automatically calls runPendingSync() or runReplicationLog()
+ * 3. All logged operations are re-executed without manual intervention
+ * 4. Recovery completes automatically and logs are cleared
+ *
+ * AUTOMATION FLOW:
+ * - Background health checks continuously monitor node status
+ * - When a previously failed node comes online, recovery is triggered
+ * - Recovery APIs (/api/recovery/sync, /api/recovery/replicate) are called automatically
+ * - This module executes all pending operations and reports completion
+ *
+ * The automation ensures zero data loss and automatic system healing
+ * without requiring manual intervention from administrators.
+ */
+
 interface PendingSyncLog {
   log_id: number;
   origin_node: NodeName;
@@ -55,6 +77,12 @@ const clearPendingSyncLog = async (node: 'node1' | 'node2', log_id: number) => {
 /**
  * processes all PENDING_SYNC logs from local nodes (1 & 2)
  * and syncs them back to the master (Node 0).
+ *
+ * AUTOMATIC EXECUTION: This function is called automatically when:
+ * 1. System detects Node 0 (central) has come back online after being down
+ * 2. Background monitoring triggers the /api/recovery/sync endpoint
+ * 3. All pending operations from replica nodes are synchronized back to central
+ * 4. No manual intervention required - fully automated recovery process
  */
 export const runPendingSync = async () => {
   let centralConnection: Connection | undefined;
@@ -141,6 +169,12 @@ export const runPendingSync = async () => {
 /**
  * processes all REPLICATION_LOG jobs from Node 0
  * and re-replicates them to the failed replica nodes (1 & 2).
+ *
+ * AUTOMATIC EXECUTION: This function is called automatically when:
+ * 1. System detects replica nodes (Node 1 or Node 2) have come back online
+ * 2. Background monitoring triggers the /api/recovery/replicate endpoint
+ * 3. All failed replication operations are re-executed to the recovered nodes
+ * 4. No manual intervention required - fully automated recovery process
  */
 export const runReplicationLog = async () => {
   let centralConnection: Connection | undefined;

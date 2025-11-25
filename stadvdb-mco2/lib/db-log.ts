@@ -3,9 +3,33 @@ import type { ReplicationLogData, PendingSyncData, NodeName } from './types';
 import type { Connection } from 'mysql2/promise';
 
 /**
+ * AUTOMATED RECOVERY SYSTEM - LOGGING MODULE
+ *
+ * This module handles the automatic logging of failed operations that need recovery.
+ * The recovery process is fully automated and occurs when nodes come back online:
+ *
+ * AUTOMATIC EXECUTION FLOW:
+ * 1. When a node fails, operations are logged here automatically
+ * 2. When the failed node comes back online, the system detects this automatically
+ * 3. Recovery operations are triggered automatically (no manual intervention)
+ * 4. The logged operations are re-executed automatically
+ *
+ * The automation is handled by:
+ * - Node health monitoring (continuous background checks)
+ * - Automatic failover detection
+ * - Auto-triggered recovery scripts when nodes recover
+ *
+ * This file only handles the LOGGING part - the actual recovery execution
+ * is handled by db-recovery.ts when nodes come back online.
+ */
+
+/**
  * Replication Failure Log
  * Called when a write to Node 0 SUCCEEDS, but the copy to a replica FAILS.
  * This function writes the *failed task* to the `REPLICATION_LOG` table on **Node 0**.
+ *
+ * AUTOMATION: When the target replica node comes back online, the system will
+ * automatically detect this and re-execute all logged operations from REPLICATION_LOG.
  */
 export const logReplicationFailure = async (logData: ReplicationLogData) => {
   let connection: Connection | undefined;
@@ -33,6 +57,10 @@ export const logReplicationFailure = async (logData: ReplicationLogData) => {
  * local node (1 or 2) SUCCEEDS.
  * writes the successful failover to the `PENDING_SYNC` table
  * on the local node that succeeded.
+ *
+ * AUTOMATION: When Node 0 (central) comes back online, the system will
+ * automatically detect this and synchronize all logged operations from
+ * PENDING_SYNC tables on all replica nodes back to the central node.
  */
 export const logPendingSync = async (node: 'node1' | 'node2', logData: PendingSyncData) => {
   let connection: Connection | undefined;

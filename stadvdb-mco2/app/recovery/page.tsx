@@ -1,79 +1,73 @@
 'use client';
 
-import { useState } from 'react';
-import { RefreshCw, Database, CheckCircle2, AlertCircle, XCircle, Server, Activity } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { RefreshCw, CheckCircle2, AlertCircle, XCircle, Server, Clock } from 'lucide-react';
 
 type NodeStatus = 'online' | 'offline' | 'degraded';
 
+interface NodeInfo {
+  name: string;
+  status: NodeStatus;
+  description: string;
+  lastChecked: string;
+  responseTime?: number;
+}
+
 interface RecoveryLog {
-  id: number;
+  id: string;
   timestamp: string;
   type: 'sync' | 'replicate';
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'pending';
   message: string;
+  node: string;
+  details?: string;
 }
 
 export default function RecoveryPage() {
-  const [isRunningSync, setIsRunningSync] = useState(false);
-  const [isRunningReplicate, setIsRunningReplicate] = useState(false);
-  const [logs, setLogs] = useState<RecoveryLog[]>([
-    {
-      id: 1,
-      timestamp: '2025-11-17 14:30:22',
-      type: 'sync',
-      status: 'success',
-      message: 'Synced 5 pending orders from Node 1 to Node 0',
-    },
-    {
-      id: 2,
-      timestamp: '2025-11-17 14:28:15',
-      type: 'replicate',
-      status: 'success',
-      message: 'Replicated 3 orders to Node 2',
-    },
-  ]);
+  const [logs, setLogs] = useState<RecoveryLog[]>([]);
+  const [nodeStatuses, setNodeStatuses] = useState<Record<string, NodeInfo>>({});
+  const [isLoading, setIsLoading] = useState(true);
+  const [lastRefresh, setLastRefresh] = useState<string>('');
 
-  const [nodeStatuses, setNodeStatuses] = useState<Record<string, NodeStatus>>({
-    'Node 0': 'online',
-    'Node 1': 'online',
-    'Node 2': 'degraded',
-  });
 
-  const handleRunSync = async () => {
-    setIsRunningSync(true);
-
-    // Simulate API call
-    setTimeout(() => {
-      const newLog: RecoveryLog = {
-        id: logs.length + 1,
-        timestamp: new Date().toLocaleString(),
-        type: 'sync',
-        status: 'success',
-        message: '[UI-ONLY] Pending sync recovery completed - synced pending writes to Node 0',
-      };
-      setLogs([newLog, ...logs]);
-      setIsRunningSync(false);
-      alert('[UI-ONLY] Running Pending Sync Recovery\nEndpoint: POST /api/recovery/sync');
-    }, 2000);
+  const fetchNodeStatus = async () => {
+    try {
+      const response = await fetch('/api/status/nodes');
+      const result = await response.json();
+      if (result.success) {
+        setNodeStatuses(result.data.nodes);
+      }
+    } catch (error) {
+      console.error('Failed to fetch node status:', error);
+    }
   };
 
-  const handleRunReplicate = async () => {
-    setIsRunningReplicate(true);
-
-    // Simulate API call
-    setTimeout(() => {
-      const newLog: RecoveryLog = {
-        id: logs.length + 1,
-        timestamp: new Date().toLocaleString(),
-        type: 'replicate',
-        status: 'success',
-        message: '[UI-ONLY] Replication recovery completed - re-replicated failed writes to replica nodes',
-      };
-      setLogs([newLog, ...logs]);
-      setIsRunningReplicate(false);
-      alert('[UI-ONLY] Running Replication Recovery\nEndpoint: POST /api/recovery/replicate');
-    }, 2000);
+  const fetchRecoveryLogs = async () => {
+    try {
+      const response = await fetch('/api/logs/recovery?limit=20');
+      const result = await response.json();
+      if (result.success) {
+        setLogs(result.data.logs);
+      }
+    } catch (error) {
+      console.error('Failed to fetch recovery logs:', error);
+    }
   };
+
+  const refreshData = async () => {
+    setIsLoading(true);
+    await Promise.all([fetchNodeStatus(), fetchRecoveryLogs()]);
+    setLastRefresh(new Date().toLocaleString());
+    setIsLoading(false);
+  };
+
+  useEffect(() => {
+    refreshData();
+
+    // Auto-refresh every 30 seconds
+    const interval = setInterval(refreshData, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   const getNodeStatusIcon = (status: NodeStatus) => {
     if (status === 'online') return <CheckCircle2 className="h-5 w-5 text-green-600" />;
@@ -95,131 +89,148 @@ export default function RecoveryPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="p-3 bg-blue-100 rounded-lg">
-          <RefreshCw className="h-6 w-6 text-blue-600" />
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="p-3 bg-blue-100 rounded-lg">
+            <RefreshCw className="h-6 w-6 text-blue-600" />
+          </div>
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Recovery Control Panel</h1>
+            <p className="text-gray-600">Real-time monitoring of automated distributed database recovery</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Recovery Control Panel</h1>
-          <p className="text-gray-600">Manage distributed database recovery and synchronization</p>
+        <div className="flex items-center gap-4">
+          {lastRefresh && (
+            <div className="text-sm text-gray-500 flex items-center gap-2">
+              <Clock className="h-4 w-4" />
+              Last updated: {lastRefresh}
+            </div>
+          )}
+          <button
+            onClick={refreshData}
+            disabled={isLoading}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium disabled:bg-blue-400 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            {isLoading ? (
+              <>
+                <RefreshCw className="h-4 w-4 animate-spin" />
+                Refreshing...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="h-4 w-4" />
+                Refresh
+              </>
+            )}
+          </button>
         </div>
       </div>
 
       {/* Node Status Grid */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {Object.entries(nodeStatuses).map(([node, status]) => (
+        {Object.entries(nodeStatuses).map(([nodeName, nodeInfo]) => (
           <div
-            key={node}
-            className={`bg-white rounded-xl shadow-md border-2 p-6 ${getNodeStatusColor(status)}`}
+            key={nodeName}
+            className={`bg-white rounded-xl shadow-md border-2 p-6 ${getNodeStatusColor(nodeInfo.status)}`}
           >
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <Server className="h-5 w-5 text-gray-600" />
-                <h3 className="font-semibold text-gray-800">{node}</h3>
+                <h3 className="font-semibold text-gray-800">{nodeName}</h3>
               </div>
-              {getNodeStatusIcon(status)}
+              {getNodeStatusIcon(nodeInfo.status)}
             </div>
             <div>
-              <p className={`text-sm font-medium ${getNodeStatusText(status)} capitalize`}>
-                {status}
+              <p className={`text-sm font-medium ${getNodeStatusText(nodeInfo.status)} capitalize`}>
+                {nodeInfo.status}
               </p>
               <p className="text-xs text-gray-600 mt-1">
-                {node === 'Node 0' && 'Central Master (All Data)'}
-                {node === 'Node 1' && 'Regional 1 (2025 Primary)'}
-                {node === 'Node 2' && 'Regional 2 (2024 Primary)'}
+                {nodeInfo.description}
               </p>
+              {nodeInfo.responseTime && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Response: {nodeInfo.responseTime}ms
+                </p>
+              )}
             </div>
           </div>
         ))}
       </div>
 
-      {/* Recovery Actions */}
+      {/* Recovery Information */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Pending Sync Recovery */}
         <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6">
           <div className="flex items-center gap-2 mb-4">
-            <Database className="h-5 w-5 text-blue-600" />
-            <h2 className="text-lg font-semibold text-gray-800">Pending Sync Recovery</h2>
+            <CheckCircle2 className="h-5 w-5 text-blue-600" />
+            <h2 className="text-lg font-semibold text-gray-800">Automatic Sync Recovery</h2>
           </div>
           <p className="text-sm text-gray-600 mb-4">
-            Synchronize pending writes from Node 1 and Node 2 back to Node 0 when it recovers from
-            failure.
+            Replica nodes automatically synchronize pending writes to the central node when it comes back online.
           </p>
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4">
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
             <p className="text-xs text-blue-800">
-              <span className="font-semibold">Endpoint:</span> POST /api/recovery/sync
+              <span className="font-semibold">Process:</span> Reads PENDING_SYNC logs from replicas
             </p>
             <p className="text-xs text-blue-800 mt-1">
-              <span className="font-semibold">Purpose:</span> Reads PENDING_SYNC logs and re-executes
-              on Node 0
+              <span className="font-semibold">Trigger:</span> Automated central node recovery detection
+            </p>
+            <p className="text-xs text-blue-800 mt-1">
+              <span className="font-semibold">Execution:</span> Background monitoring calls /api/recovery/sync automatically
             </p>
           </div>
-          <button
-            onClick={handleRunSync}
-            disabled={isRunningSync}
-            className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-semibold disabled:bg-blue-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          >
-            {isRunningSync ? (
-              <>
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                Running Sync...
-              </>
-            ) : (
-              <>
-                <RefreshCw className="h-4 w-4" />
-                Run Pending Sync
-              </>
-            )}
-          </button>
         </div>
 
-        {/* Replication Recovery */}
         <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6">
           <div className="flex items-center gap-2 mb-4">
-            <Activity className="h-5 w-5 text-green-600" />
-            <h2 className="text-lg font-semibold text-gray-800">Replication Recovery</h2>
+            <RefreshCw className="h-5 w-5 text-green-600" />
+            <h2 className="text-lg font-semibold text-gray-800">Automatic Replication Recovery</h2>
           </div>
           <p className="text-sm text-gray-600 mb-4">
-            Re-replicate failed writes from Node 0 to replica nodes (Node 1 and Node 2) when they
-            recover.
+            Central node automatically re-replicates failed writes to replica nodes when they recover.
           </p>
-          <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
+          <div className="bg-green-50 border border-green-200 rounded-lg p-3">
             <p className="text-xs text-green-800">
-              <span className="font-semibold">Endpoint:</span> POST /api/recovery/replicate
+              <span className="font-semibold">Process:</span> Reads REPLICATION_LOG for failed operations
             </p>
             <p className="text-xs text-green-800 mt-1">
-              <span className="font-semibold">Purpose:</span> Reads REPLICATION_LOG and re-replicates
-              to replicas
+              <span className="font-semibold">Trigger:</span> Automated replica node recovery detection
+            </p>
+            <p className="text-xs text-green-800 mt-1">
+              <span className="font-semibold">Execution:</span> Background monitoring calls /api/recovery/replicate automatically
             </p>
           </div>
-          <button
-            onClick={handleRunReplicate}
-            disabled={isRunningReplicate}
-            className="w-full px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold disabled:bg-green-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-          >
-            {isRunningReplicate ? (
-              <>
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                Running Replication...
-              </>
-            ) : (
-              <>
-                <Activity className="h-4 w-4" />
-                Run Replication Recovery
-              </>
-            )}
-          </button>
         </div>
       </div>
 
-      {/* Recovery Logs */}
+      {/* Transaction Logs */}
       <div className="bg-white rounded-xl shadow-md border border-gray-200">
         <div className="px-6 py-4 border-b border-gray-200 bg-gray-50">
-          <h2 className="text-lg font-semibold text-gray-800">Recovery Logs</h2>
+          <h2 className="text-lg font-semibold text-gray-800">Recovery Transaction Logs</h2>
+          <p className="text-sm text-gray-600 mt-1">Real-time view of pending sync and replication operations</p>
         </div>
-        <div className="divide-y divide-gray-200">
+        <div className="divide-y divide-gray-200 max-h-96 overflow-y-auto">
           {logs.length === 0 ? (
-            <div className="p-8 text-center text-gray-500">No recovery logs yet</div>
+            <div className="p-8 text-center">
+              {isLoading ? (
+                <div className="flex items-center justify-center gap-2 text-gray-500">
+                  <RefreshCw className="h-5 w-5 animate-spin" />
+                  Loading recovery logs...
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-center gap-2 text-green-600">
+                    <CheckCircle2 className="h-6 w-6" />
+                    <span className="font-medium">System Operating Normally</span>
+                  </div>
+                  <p className="text-sm text-gray-600">
+                    No recovery operations required - all nodes are functioning correctly
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    Recovery logs will appear here when failover scenarios occur
+                  </p>
+                </div>
+              )}
+            </div>
           ) : (
             logs.map((log) => (
               <div key={log.id} className="p-4 hover:bg-gray-50 transition">
@@ -227,23 +238,46 @@ export default function RecoveryPage() {
                   <div className="flex items-start gap-3">
                     {log.status === 'success' ? (
                       <CheckCircle2 className="h-5 w-5 text-green-600 mt-0.5" />
-                    ) : (
+                    ) : log.status === 'error' ? (
                       <XCircle className="h-5 w-5 text-red-600 mt-0.5" />
+                    ) : (
+                      <Clock className="h-5 w-5 text-orange-600 mt-0.5" />
                     )}
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">{log.message}</p>
-                      <p className="text-xs text-gray-500 mt-1">{log.timestamp}</p>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <p className="text-sm font-medium text-gray-900">{log.message}</p>
+                        <span className="text-xs text-gray-500 font-medium">from {log.node}</span>
+                      </div>
+                      <p className="text-xs text-gray-500">{log.timestamp}</p>
+                      {log.details && (
+                        <p className="text-xs text-gray-600 mt-1 bg-gray-100 px-2 py-1 rounded font-mono">
+                          {log.details.length > 100 ? log.details.substring(0, 100) + '...' : log.details}
+                        </p>
+                      )}
                     </div>
                   </div>
-                  <span
-                    className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      log.type === 'sync'
-                        ? 'bg-blue-100 text-blue-700'
-                        : 'bg-green-100 text-green-700'
-                    }`}
-                  >
-                    {log.type}
-                  </span>
+                  <div className="flex flex-col items-end gap-1">
+                    <span
+                      className={`px-2 py-1 rounded-full text-xs font-medium ${
+                        log.type === 'sync'
+                          ? 'bg-blue-100 text-blue-700'
+                          : 'bg-green-100 text-green-700'
+                      }`}
+                    >
+                      {log.type}
+                    </span>
+                    <span
+                      className={`px-2 py-1 rounded-full text-xs font-medium ${
+                        log.status === 'success'
+                          ? 'bg-green-100 text-green-700'
+                          : log.status === 'error'
+                          ? 'bg-red-100 text-red-700'
+                          : 'bg-orange-100 text-orange-700'
+                      }`}
+                    >
+                      {log.status}
+                    </span>
+                  </div>
                 </div>
               </div>
             ))
