@@ -5,8 +5,8 @@ import type { Connection } from 'mysql2/promise';
 export interface Order {
   ORDER_NUMBER: string;
   CUSTOMER_NUMBER: string;
-  ORDER_DATE: string; 
-  DELIVERY_DATE: string; 
+  ORDER_DATE: string;
+  DELIVERY_DATE: string;
   TOTAL_AMOUNT: number;
 }
 

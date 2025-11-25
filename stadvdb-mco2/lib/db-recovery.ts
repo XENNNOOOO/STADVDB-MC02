@@ -1,22 +1,43 @@
-
 import { getConnection } from './connections';
 import { executeWriteTransaction, executeUpdateTransaction, executeDeleteTransaction } from './db-write';
-import { getProductsFromMaster } from './db-read'; 
+import { getProductsFromMaster } from './db-read';
 import type { Connection } from 'mysql2/promise';
 import type { NodeName, OrderFormData, Product } from './types';
+
+/**
+ * AUTOMATED RECOVERY SYSTEM - EXECUTION MODULE
+ *
+ * This module handles the automatic execution of recovery operations.
+ * These functions are triggered automatically when nodes come back online:
+ *
+ * AUTOMATIC EXECUTION TRIGGERS:
+ * 1. Node health monitoring detects when a failed node comes back online
+ * 2. System automatically calls runPendingSync() or runReplicationLog()
+ * 3. All logged operations are re-executed without manual intervention
+ * 4. Recovery completes automatically and logs are cleared
+ *
+ * AUTOMATION FLOW:
+ * - Background health checks continuously monitor node status
+ * - When a previously failed node comes online, recovery is triggered
+ * - Recovery APIs (/api/recovery/sync, /api/recovery/replicate) are called automatically
+ * - This module executes all pending operations and reports completion
+ *
+ * The automation ensures zero data loss and automatic system healing
+ * without requiring manual intervention from administrators.
+ */
 
 interface PendingSyncLog {
   log_id: number;
   origin_node: NodeName;
   delivery_date: string;
-  order_data: string; 
+  order_data: string;
 }
 
 interface ReplicationLog {
   log_id: number;
   target_node: NodeName;
   query_text: string;
-  query_params: string; 
+  query_params: string;
 }
 
 /**
@@ -33,7 +54,7 @@ const readPendingSyncLog = async (node: 'node1' | 'node2'): Promise<PendingSyncL
   } catch (err: any) {
     console.warn(`RECOVERY: Could not read PENDING_SYNC log from ${node}. It might be down.`, err.message);
     if (connection) await connection.end();
-    return []; 
+    return [];
     // return empty array if node is down
   }
 };
@@ -56,6 +77,12 @@ const clearPendingSyncLog = async (node: 'node1' | 'node2', log_id: number) => {
 /**
  * processes all PENDING_SYNC logs from local nodes (1 & 2)
  * and syncs them back to the master (Node 0).
+ *
+ * AUTOMATIC EXECUTION: This function is called automatically when:
+ * 1. System detects Node 0 (central) has come back online after being down
+ * 2. Background monitoring triggers the /api/recovery/sync endpoint
+ * 3. All pending operations from replica nodes are synchronized back to central
+ * 4. No manual intervention required - fully automated recovery process
  */
 export const runPendingSync = async () => {
   let centralConnection: Connection | undefined;
@@ -67,7 +94,7 @@ export const runPendingSync = async () => {
     let productPriceMap = new Map<string, number>();
     try {
       // uses centralConnection because we are syncing to central
-      const products: Product[] = await getProductsFromMaster(centralConnection); 
+      const products: Product[] = await getProductsFromMaster(centralConnection);
       products.forEach(p => {
         productPriceMap.set(p.PRODUCT_NUMBER, p.UNIT_PRICE);
       });
@@ -101,12 +128,12 @@ export const runPendingSync = async () => {
             }
             totalAmount += price * item.quantity;
           }
-          
+
           // check if this was a DELETE action
           if ((orderData as any)._action === 'DELETE') {
             console.log(`RECOVERY (SYNC): Re-running DELETE ${orderNumber} on Node 0...`);
             await executeDeleteTransaction(centralConnection, orderNumber);
-          } 
+          }
           // check if this was an UPDATE action
           else if (await orderExists(centralConnection, orderNumber)) {
             console.log(`RECOVERY (SYNC): Re-running UPDATE ${orderNumber} on Node 0...`);
@@ -128,7 +155,7 @@ export const runPendingSync = async () => {
         }
       }
     }
-    
+
     return { status: 'OK', totalSynced };
 
   } catch (err: any) {
@@ -142,11 +169,17 @@ export const runPendingSync = async () => {
 /**
  * processes all REPLICATION_LOG jobs from Node 0
  * and re-replicates them to the failed replica nodes (1 & 2).
+ *
+ * AUTOMATIC EXECUTION: This function is called automatically when:
+ * 1. System detects replica nodes (Node 1 or Node 2) have come back online
+ * 2. Background monitoring triggers the /api/recovery/replicate endpoint
+ * 3. All failed replication operations are re-executed to the recovered nodes
+ * 4. No manual intervention required - fully automated recovery process
  */
 export const runReplicationLog = async () => {
   let centralConnection: Connection | undefined;
   let replicaConnection: Connection | undefined;
-  
+
   try {
     // get all pending replication tasks from Node 0
     centralConnection = await getConnection('central');
@@ -154,7 +187,7 @@ export const runReplicationLog = async () => {
     const [logs] = await centralConnection.execute(
       "SELECT * FROM REPLICATION_LOG WHERE status = 'pending'"
     );
-    
+
     const pendingLogs = logs as ReplicationLog[];
     if (pendingLogs.length === 0) {
       await centralConnection.end(); // Close connection early
@@ -168,15 +201,15 @@ export const runReplicationLog = async () => {
     for (const log of pendingLogs) {
       try {
         const targetNode = log.target_node as NodeName;
-        
+
         // connect to the (now online) replica node
         replicaConnection = await getConnection(targetNode);
-        
-        // handle all 3 query types 
+
+        // handle all 3 query types
         if (log.query_text === 'REPLICATE_CREATE_ORDER') {
           const { orderNumber, orderData, totalAmount } = JSON.parse(log.query_params);
           await executeWriteTransaction(replicaConnection, orderNumber, orderData, totalAmount);
-        } 
+        }
         else if (log.query_text === 'REPLICATE_UPDATE_ORDER') {
           const { orderNumber, orderData, totalAmount } = JSON.parse(log.query_params);
           await executeUpdateTransaction(replicaConnection, orderNumber, orderData, totalAmount);
@@ -185,13 +218,13 @@ export const runReplicationLog = async () => {
           const { orderNumber } = JSON.parse(log.query_params);
           await executeDeleteTransaction(replicaConnection, orderNumber);
         }
-        
+
         // if successful, update the log on Node 0 to 'completed
         await centralConnection.execute(
           "UPDATE REPLICATION_LOG SET status = 'completed' WHERE log_id = ?",
           [log.log_id]
         );
-        
+
         totalReplicated++;
 
       } catch (jobErr: any) {
@@ -201,7 +234,7 @@ export const runReplicationLog = async () => {
         if (replicaConnection) await replicaConnection.end();
       }
     }
-    
+
     return { status: 'OK', totalReplicated };
 
   } catch (err: any) {

@@ -1,13 +1,10 @@
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
 import './globals.css';
 import Navbar from '@/app/components/Navbar';
 
-const inter = Inter({ subsets: ['latin'] });
-
 export const metadata: Metadata = {
-  title: 'GO-Sales Order Management',
-  description: 'MCO2 Project',
+  title: 'GO-Sales - Distributed Order Management',
+  description: 'Advanced distributed database order management system',
 };
 
 export default function RootLayout({
@@ -17,9 +14,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={inter.className}>
+      <body>
         <Navbar />
-        <main className="container mx-auto max-w-7xl p-8">
+        <main className="container mx-auto max-w-7xl px-8 py-8">
           {children}
         </main>
       </body>

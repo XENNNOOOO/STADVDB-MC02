@@ -1,224 +1,741 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import Link from 'next/link';
-import { Pencil, Trash2 } from 'lucide-react';
-import OrderFilter from './OrderFilter';
-import { Order } from '@/app/page';
+import { Pencil, Trash2, Eye, X, Plus, ChevronDown } from 'lucide-react';
+import QuickActions from './QuickActions';
+
+interface Order {
+  ORDER_NUMBER: string;
+  CUSTOMER_NUMBER: string;
+  ORDER_DATE: string;
+  DELIVERY_DATE: string;
+  TOTAL_AMOUNT: number;
+  NODE_ACCESSED?: string;
+  FAILOVER_PATH?: string[];
+}
+
+interface Product {
+  PRODUCT_NUMBER: string;
+  PRODUCT_NAME: string;
+  UNIT_PRICE: number;
+}
 
 interface APIResponse<T> {
   success: boolean;
   data?: T;
   message?: string;
+  failover_info?: {
+    used_node: string;
+    attempts: string[];
+    pagination?: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+      hasMore: boolean;
+    };
+  };
   error?: string;
 }
 
+type YearFilterType = 'all' | '2024' | '2025';
+type ModalMode = 'view' | 'edit' | 'create' | 'delete' | null;
+
 export default function OrderList() {
-  const [filter, setFilter] = useState<'all' | 'node1' | 'node2'>('all'); // Default to all orders
+  const [filter, setFilter] = useState<YearFilterType>('2025');
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [modalMode, setModalMode] = useState<ModalMode>(null);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage] = useState(50); // Limit to 50 items per page
 
-  // Fetch orders based on filter
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+  const [totalOrders, setTotalOrders] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+
+  // Fetch products on component mount
+  useEffect(() => {
+    const fetchProducts = async () => {
+      try {
+        const response = await fetch('/api/products?year=2025');
+        const result: APIResponse<Product[]> = await response.json();
+
+        if (result.success && result.data) {
+          setProducts(result.data);
+        } else {
+          console.error('Failed to fetch products:', result.error);
+        }
+      } catch (err: any) {
+        console.error('Error fetching products:', err);
+      }
+    };
+
+    fetchProducts();
+  }, []);
+
+  // Fetch orders based on filter and pagination
   useEffect(() => {
     const fetchOrders = async () => {
       setLoading(true);
       setError(null);
 
       try {
-        let allOrders: Order[] = [];
+        // For "all" filter, default to 2025 to avoid complexity
+        // User can switch to specific year for better performance
+        const year = filter === 'all' ? '2025' : filter;
 
-        if (filter === 'all') {
-          // Fetch both 2024 and 2025 data with reasonable limits
-          const [response2024, response2025] = await Promise.allSettled([
-            fetch('/api/orders?year=2024'),
-            fetch('/api/orders?year=2025')
-          ]);
+        const response = await fetch(
+          `/api/orders?year=${year}&page=${currentPage}&limit=${pageSize}`
+        );
 
-          // Handle 2024 data
-          if (response2024.status === 'fulfilled' && response2024.value.ok) {
-            const result2024: APIResponse<Order[]> = await response2024.value.json();
-            if (result2024.success && result2024.data) {
-              // Include all 2024 orders
-              allOrders = [...allOrders, ...result2024.data];
-            }
-          }
-
-          // Handle 2025 data
-          if (response2025.status === 'fulfilled' && response2025.value.ok) {
-            const result2025: APIResponse<Order[]> = await response2025.value.json();
-            if (result2025.success && result2025.data) {
-              // Include all 2025 orders
-              allOrders = [...allOrders, ...result2025.data];
-            }
-          }
-
-          // If both failed, show error
-          if (response2024.status === 'rejected' && response2025.status === 'rejected') {
-            throw new Error('Failed to fetch orders from any node');
-          }
-
-        } else {
-          // Fetch specific year data
-          const year = filter === 'node1' ? '2025' : '2024';
-          const response = await fetch(`/api/orders?year=${year}`);
-
-          if (!response.ok) {
-            throw new Error(`Failed to fetch orders: ${response.statusText}`);
-          }
-
-          const result: APIResponse<Order[]> = await response.json();
-
-          if (!result.success || !result.data) {
-            throw new Error(result.error || 'Failed to fetch orders');
-          }
-
-          // Include all orders for the selected year
-          allOrders = result.data;
+        if (!response.ok) {
+          throw new Error(`Failed to fetch orders: ${response.statusText}`);
         }
 
-        setOrders(allOrders);
-        setCurrentPage(1); // Reset to first page when filter changes
+        const result: APIResponse<Order[]> = await response.json();
+
+        if (!result.success || !result.data) {
+          throw new Error(result.error || 'Failed to fetch orders');
+        }
+
+        setOrders(result.data);
+
+        // Update pagination metadata from response
+        if (result.failover_info?.pagination) {
+          setTotalOrders(result.failover_info.pagination.total);
+          setTotalPages(result.failover_info.pagination.totalPages);
+        }
 
       } catch (err: any) {
         console.error('Error fetching orders:', err);
         setError(err.message || 'Failed to fetch orders');
-        setOrders([]); // Reset orders on error
+        setOrders([]);
       } finally {
         setLoading(false);
       }
     };
 
     fetchOrders();
-  }, [filter]);
+  }, [filter, currentPage, pageSize]);
 
-  const filteredOrders = orders.filter(order => {
-    if (filter === 'all') return true;
+  // Lock body scroll when modal is open
+  useEffect(() => {
+    if (modalMode) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = 'auto';
+    }
 
-    // Use DELIVERY_DATE for filtering since that's what your fragmentation is based on
-    const year = parseInt(order.DELIVERY_DATE?.slice(0, 4) || order.ORDER_DATE?.slice(0, 4) || '2024');
-    if (filter === 'node1') return year >= 2025;
-    if (filter === 'node2') return year <= 2024;
+    // Cleanup function to restore scroll on unmount
+    return () => {
+      document.body.style.overflow = 'auto';
+    };
+  }, [modalMode]);
+
+  const filteredOrders = orders.filter((order) => {
+    const year = parseInt(order.DELIVERY_DATE.slice(0, 4));
+    if (filter === '2024') return year <= 2024;
+    if (filter === '2025') return year >= 2025;
     return true;
   });
 
-  // Pagination logic
-  const totalPages = Math.ceil(filteredOrders.length / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const endIndex = startIndex + itemsPerPage;
-  const currentOrders = filteredOrders.slice(startIndex, endIndex);
 
-  if (loading) {
-    return (
-      <div>
-        <OrderFilter selected={filter} onChange={setFilter} />
-        <div className="mt-4 p-8 text-center">
-          <div className="animate-pulse text-gray-500">Loading orders...</div>
-        </div>
-      </div>
-    );
-  }
+  const openModal = (mode: ModalMode, order?: Order) => {
+    setSelectedOrder(order || null);
+    setModalMode(mode);
+  };
 
-  if (error) {
-    return (
-      <div>
-        <OrderFilter selected={filter} onChange={setFilter} />
-        <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded">
-          <div className="text-red-700 font-semibold">Error loading orders</div>
-          <div className="text-red-600 text-sm mt-1">{error}</div>
-          <button
-            onClick={() => window.location.reload()}
-            className="mt-2 px-3 py-1 bg-red-600 text-white rounded text-sm hover:bg-red-700"
-          >
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const closeModal = () => {
+    setSelectedOrder(null);
+    setModalMode(null);
+  };
+
+  const handleFilterChange = (newFilter: YearFilterType) => {
+    setFilter(newFilter);
+    setCurrentPage(1); // Reset to first page when filter changes
+  };
+
+  const handlePageSizeChange = (newSize: number) => {
+    setPageSize(newSize);
+    setCurrentPage(1); // Reset to first page when page size changes
+  };
 
   return (
-    <div>
-      <OrderFilter selected={filter} onChange={setFilter} />
+    <>
+      <QuickActions onNewOrder={() => openModal('create')} />
 
-      <div className="mt-4">
-        {/* Show total count */}
-        <div className="mb-4 text-sm text-gray-600">
-          Showing {currentOrders.length} of {filteredOrders.length} orders
+      <div className="bg-white rounded-2xl shadow-sm border-2 border-slate-200 overflow-hidden">
+        <div className="px-6 py-4 border-b-2 border-slate-200 bg-slate-50">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-slate-800">Orders</h2>
+            <div className="relative">
+              <select
+                value={filter}
+                onChange={(e) => handleFilterChange(e.target.value as YearFilterType)}
+                className="appearance-none pl-4 pr-10 py-2.5 text-sm font-semibold border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white text-slate-700 cursor-pointer hover:bg-slate-50 transition-colors"
+              >
+                <option value="all">All Years</option>
+                <option value="2025">2025</option>
+                <option value="2024">2024</option>
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
+                <svg className="h-5 w-5 text-slate-500" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+              </div>
+            </div>
+          </div>
         </div>
 
-        {filteredOrders.length === 0 ? (
-          <div className="p-8 text-center text-gray-500">
-            No orders found for the selected filter.
+        {loading ? (
+          <div className="px-6 py-12 text-center">
+            <p className="text-slate-500 font-medium">Loading orders...</p>
+          </div>
+        ) : error ? (
+          <div className="px-6 py-12 text-center">
+            <p className="text-red-600 font-medium">{error}</p>
+          </div>
+        ) : filteredOrders.length === 0 ? (
+          <div className="px-6 py-12 text-center">
+            <p className="text-slate-500 font-medium">No orders found</p>
           </div>
         ) : (
-          <>
-            <table className="w-full border-collapse">
-              <thead>
-                <tr className="bg-gray-100 text-left text-sm text-gray-600">
-                  <th className="px-3 py-2 border-b">Order #</th>
-                  <th className="px-3 py-2 border-b">Customer</th>
-                  <th className="px-3 py-2 border-b">Delivery Date</th>
-                  <th className="px-3 py-2 border-b">Total</th>
-                  <th className="px-3 py-2 border-b w-12"></th>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-slate-50 border-b-2 border-slate-200">
+              <tr>
+                <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Order #
+                </th>
+                <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Customer ID
+                </th>
+                <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Created At
+                </th>
+                <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Delivery Date
+                </th>
+                <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Rider ID
+                </th>
+                <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Actions
+                </th>
+              </tr>
+            </thead>
+
+            <tbody className="bg-white divide-y divide-slate-200">
+              {filteredOrders.map((order) => (
+                <tr key={order.ORDER_NUMBER} className="hover:bg-slate-50 transition-colors">
+                  <td className="px-6 py-4 whitespace-nowrap text-center">
+                    <span className="font-semibold text-slate-900">{order.ORDER_NUMBER}</span>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600 font-medium">
+                    {order.CUSTOMER_NUMBER}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600">
+                    {new Date(order.ORDER_DATE).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600">
+                    {new Date(order.DELIVERY_DATE).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600">
+                    {'Not Assigned'}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-center">
+                    <div className="flex justify-center gap-2">
+                      <button
+                        onClick={() => openModal('view', order)}
+                        className="p-2 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
+                        title="View Details"
+                      >
+                        <Eye size={16} />
+                      </button>
+                      <button
+                        onClick={() => openModal('edit', order)}
+                        className="p-2 text-slate-600 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
+                        title="Edit Order"
+                      >
+                        <Pencil size={16} />
+                      </button>
+                      <button
+                        onClick={() => openModal('delete', order)}
+                        className="p-2 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                        title="Delete Order"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
-              </thead>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        )}
 
-              <tbody>
-                {currentOrders.map((order) => (
-                  <tr key={order.ORDER_NUMBER} className="hover:bg-gray-50 transition">
-                    <td className="px-3 py-2 border-b">{order.ORDER_NUMBER}</td>
-                    <td className="px-3 py-2 border-b">{order.CUSTOMER_NUMBER}</td>
-                    <td className="px-3 py-2 border-b">{order.DELIVERY_DATE || order.ORDER_DATE}</td>
-                    <td className="px-3 py-2 border-b">₱{order.TOTAL_AMOUNT.toFixed(2)}</td>
+        {/* Pagination Controls */}
+        {!loading && !error && orders.length > 0 && (
+          <div className="px-6 py-4 border-t-2 border-slate-200 bg-slate-50">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
 
-                    {/* Right aligned small actions */}
-                    <td className="px-3 py-2 border-b text-right">
-                      <div className="flex justify-end gap-3 opacity-70 hover:opacity-100 transition">
+              {/* Left: Results info */}
+              <div className="text-sm text-slate-600 font-medium">
+                Showing {((currentPage - 1) * pageSize) + 1} to{' '}
+                {Math.min(currentPage * pageSize, totalOrders)} of{' '}
+                {totalOrders} orders
+              </div>
 
-                        <Link href={`/orders/${order.ORDER_NUMBER}`}>
-                          <Pencil size={18} className="cursor-pointer hover:text-blue-600" />
-                        </Link>
-
-                        <Link href={`/orders/${order.ORDER_NUMBER}/delete`}>
-                          <Trash2 size={18} className="cursor-pointer hover:text-red-600" />
-                        </Link>
-
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-
-            {/* Pagination controls */}
-            {totalPages > 1 && (
-              <div className="mt-6 flex justify-center items-center gap-2">
+              {/* Center: Page controls */}
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                   disabled={currentPage === 1}
-                  className="px-3 py-1 bg-gray-200 text-gray-700 rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-300"
+                  className="px-4 py-2 border-2 border-slate-300 rounded-lg text-sm font-semibold
+                             disabled:opacity-30 disabled:cursor-not-allowed
+                             hover:bg-slate-100 transition-all text-slate-700"
                 >
                   Previous
                 </button>
 
-                <span className="px-3 py-1 text-sm text-gray-600">
-                  Page {currentPage} of {totalPages}
-                </span>
+                {/* Page numbers */}
+                <div className="flex gap-1">
+                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                    // Show current page and 2 pages before and after
+                    let pageNum;
+                    if (totalPages <= 5) {
+                      pageNum = i + 1;
+                    } else if (currentPage <= 3) {
+                      pageNum = i + 1;
+                    } else if (currentPage >= totalPages - 2) {
+                      pageNum = totalPages - 4 + i;
+                    } else {
+                      pageNum = currentPage - 2 + i;
+                    }
+
+                    return (
+                      <button
+                        key={pageNum}
+                        onClick={() => setCurrentPage(pageNum)}
+                        className={`px-3 py-2 rounded-lg text-sm font-semibold transition-all ${
+                          currentPage === pageNum
+                            ? 'bg-indigo-600 text-white'
+                            : 'hover:bg-slate-100 text-slate-700 border-2 border-slate-300'
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    );
+                  })}
+                </div>
 
                 <button
-                  onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
-                  disabled={currentPage === totalPages}
-                  className="px-3 py-1 bg-gray-200 text-gray-700 rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-300"
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  disabled={currentPage >= totalPages}
+                  className="px-4 py-2 border-2 border-slate-300 rounded-lg text-sm font-semibold
+                             disabled:opacity-30 disabled:cursor-not-allowed
+                             hover:bg-slate-100 transition-all text-slate-700"
                 >
                   Next
                 </button>
               </div>
-            )}
-          </>
+
+              {/* Right: Page size selector */}
+              <div className="relative">
+                <select
+                  value={pageSize}
+                  onChange={(e) => handlePageSizeChange(parseInt(e.target.value))}
+                  className="appearance-none pl-3 pr-10 py-2 text-sm font-semibold border-2 border-slate-300 rounded-lg
+                             focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500
+                             bg-white text-slate-700 cursor-pointer hover:bg-slate-50 transition-colors"
+                >
+                  <option value="25">25 per page</option>
+                  <option value="50">50 per page</option>
+                  <option value="100">100 per page</option>
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
+                  <svg className="h-4 w-4 text-slate-500" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                  </svg>
+                </div>
+              </div>
+
+            </div>
+          </div>
         )}
+      </div>
+
+      {modalMode && (
+        <OrderModal
+          mode={modalMode}
+          order={selectedOrder}
+          onClose={closeModal}
+          onEdit={() => {
+            if (selectedOrder) {
+              setModalMode('edit');
+            }
+          }}
+          onDelete={() => {
+            if (selectedOrder) {
+              setModalMode('delete');
+            }
+          }}
+          products={products}
+        />
+      )}
+    </>
+  );
+}
+
+interface OrderModalProps {
+  mode: 'view' | 'edit' | 'create' | 'delete';
+  order: Order | null;
+  onClose: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
+  products: Product[];
+}
+
+function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderModalProps) {
+  const [formData, setFormData] = useState({
+    deliveryDate: order?.deliveryDate || '',
+    items: [{ productId: 1, quantity: 2 }],
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const action = mode === 'create' ? 'Creating' : 'Updating';
+    alert(`[UI-ONLY] ${action} order:\n${JSON.stringify(formData, null, 2)}`);
+    onClose();
+  };
+
+  const handleDelete = () => {
+    alert(`[UI-ONLY] Deleting order ${order?.orderNumber}`);
+    onClose();
+  };
+
+  const calculateTotal = () => {
+    return formData.items.reduce((total, item) => {
+      const product = products.find((p) => p.PRODUCT_NUMBER === item.productId);
+      return total + (product?.UNIT_PRICE || 0) * item.quantity;
+    }, 0);
+  };
+
+  const addItem = () => {
+    setFormData({
+      ...formData,
+      items: [...formData.items, { productId: 0, quantity: 1 }],
+    });
+  };
+
+  const removeItem = (index: number) => {
+    setFormData({
+      ...formData,
+      items: formData.items.filter((_, i) => i !== index),
+    });
+  };
+
+  const updateItem = (index: number, field: 'productId' | 'quantity', value: string | number) => {
+    const newItems = [...formData.items];
+    newItems[index] = { ...newItems[index], [field]: value };
+    setFormData({ ...formData, items: newItems });
+  };
+
+  // View Mode
+  if (mode === 'view') {
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto scrollbar-hide">
+        <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full my-8 max-h-[90vh] overflow-y-auto scrollbar-hide">
+          {/* Header */}
+          <div className="px-8 pt-8 pb-6 border-b-2 border-slate-200">
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="text-2xl font-bold text-slate-900 mb-1">Order Details</h3>
+                <p className="text-slate-500 text-sm font-medium">{order?.orderNumber}</p>
+              </div>
+              <button
+                onClick={onClose}
+                className="p-2 hover:bg-slate-100 rounded-lg transition-all text-slate-400 hover:text-slate-600"
+              >
+                <X size={24} />
+              </button>
+            </div>
+          </div>
+
+          {/* Content */}
+          <div className="p-8 space-y-6">
+            {/* Customer Information */}
+            <div>
+              <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Customer Information</h4>
+              <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
+                <p className="text-sm text-slate-600 mb-1">Customer ID (Auto-assigned)</p>
+                <p className="text-lg font-bold text-slate-900">{order?.userId}</p>
+                <p className="text-xs text-slate-500 mt-1">Automatically assigned based on delivery year</p>
+              </div>
+            </div>
+
+            {/* Order Details */}
+            <div>
+              <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Order Information</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
+                  <p className="text-sm text-slate-600 mb-1">Created At</p>
+                  <p className="text-lg font-bold text-slate-900">
+                    {order?.createdAt && new Date(order.createdAt).toLocaleString('en-US', {
+                      month: '2-digit',
+                      day: '2-digit',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                      hour12: true
+                    })}
+                  </p>
+                </div>
+                <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
+                  <p className="text-sm text-slate-600 mb-1">Delivery Date</p>
+                  <p className="text-lg font-bold text-slate-900">{order?.deliveryDate && new Date(order.deliveryDate).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}</p>
+                </div>
+                <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
+                  <p className="text-sm text-slate-600 mb-1">Delivery Rider ID (Auto-assigned)</p>
+                  <p className="text-lg font-bold text-slate-900">{order?.deliveryRiderId || 'Not Assigned'}</p>
+                  <p className="text-xs text-slate-500 mt-1">Automatically assigned based on delivery year</p>
+                </div>
+                <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
+                  <p className="text-sm text-slate-600 mb-1">Last Updated</p>
+                  <p className="text-lg font-bold text-slate-900">{order?.updatedAt && new Date(order.updatedAt).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer Actions */}
+          <div className="px-8 pb-8 flex justify-end gap-3">
+            <button
+              onClick={onEdit}
+              className="px-6 py-3 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition-all font-semibold"
+            >
+              Edit Order
+            </button>
+            <button
+              onClick={onDelete}
+              className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all font-semibold flex items-center gap-2"
+            >
+              <Trash2 size={18} />
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Delete Mode
+  if (mode === 'delete') {
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto scrollbar-hide">
+        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full my-8 max-h-[90vh] overflow-y-auto scrollbar-hide">
+          {/* Header */}
+          <div className="px-8 pt-8 pb-6 border-b-2 border-slate-200">
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="text-2xl font-bold text-slate-900 mb-1">Delete Order</h3>
+                <p className="text-slate-500 text-sm font-medium">{order?.orderNumber}</p>
+              </div>
+              <button
+                onClick={onClose}
+                className="p-2 hover:bg-slate-100 rounded-lg transition-all text-slate-400 hover:text-slate-600"
+              >
+                <X size={24} />
+              </button>
+            </div>
+          </div>
+
+          {/* Content */}
+          <div className="p-8">
+            <div className="p-5 bg-red-50 rounded-xl border-2 border-red-200 mb-4">
+              <p className="text-slate-800 font-medium">
+                Are you sure you want to delete this order?
+              </p>
+            </div>
+            <p className="text-sm text-slate-600">
+              This will permanently remove the order from all nodes in the distributed database. This action cannot be undone.
+            </p>
+          </div>
+
+          {/* Footer Actions */}
+          <div className="px-8 pb-8 flex gap-3">
+            <button
+              onClick={onClose}
+              className="flex-1 px-5 py-3 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition-all font-semibold"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleDelete}
+              className="flex-1 px-5 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all font-semibold flex items-center justify-center gap-2"
+            >
+              <Trash2 size={18} />
+              Delete
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Create/Edit Mode
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto scrollbar-hide">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full my-8 max-h-[90vh] overflow-y-auto scrollbar-hide">
+        {/* Header */}
+        <div className="px-8 pt-8 pb-6 border-b-2 border-slate-200">
+          <div className="flex justify-between items-start">
+            <div>
+              <h3 className="text-2xl font-bold text-slate-900 mb-1">
+                {mode === 'create' ? 'Create New Order' : 'Edit Order'}
+              </h3>
+              {mode === 'edit' && (
+                <p className="text-slate-500 text-sm font-medium">{order?.orderNumber}</p>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-slate-100 rounded-lg transition-all text-slate-400 hover:text-slate-600"
+            >
+              <X size={24} />
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        <form onSubmit={handleSubmit} className="p-8 space-y-6">
+          {/* Order Information */}
+          <div>
+            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Order Information</h4>
+            <div className="bg-slate-50 rounded-xl p-6 border-2 border-slate-200">
+              <div className="grid grid-cols-1 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-2">
+                    Delivery Date <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={formData.deliveryDate}
+                    onChange={(e) => setFormData({ ...formData, deliveryDate: e.target.value })}
+                    className="w-full px-4 py-2 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-medium text-slate-700 bg-white cursor-pointer"
+                    required
+                  />
+                </div>
+                <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                  <p className="text-sm text-blue-700 font-medium">
+                    📋 Customer and rider information will be automatically assigned based on the delivery year.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Order Items */}
+          <div>
+            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Order Items</h4>
+            <div className="bg-slate-50 rounded-xl p-6 border-2 border-slate-200">
+              <div className="flex items-center justify-end mb-4">
+                <button
+                  type="button"
+                  onClick={addItem}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all text-sm font-semibold flex items-center gap-2"
+                >
+                  <Plus size={16} />
+                  Add Item
+                </button>
+              </div>
+
+            <div className="space-y-3">
+              {formData.items.map((item, index) => (
+                <div
+                  key={index}
+                  className="flex gap-3 items-start p-4 bg-white rounded-lg border-2 border-slate-200"
+                >
+                  <div className="flex-1 relative">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Product</label>
+                    <select
+                      value={item.productId}
+                      onChange={(e) => updateItem(index, 'productId', parseInt(e.target.value) || 0)}
+                      className="w-full appearance-none px-3 py-2 pr-10 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm font-medium bg-white cursor-pointer text-slate-700"
+                    >
+                      <option value="">Select a product</option>
+                      {products.map((product) => (
+                        <option key={product.PRODUCT_NUMBER} value={product.PRODUCT_NUMBER}>
+                          {product.PRODUCT_NAME} - ${product.UNIT_PRICE?.toFixed(2) || '0.00'}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 pt-5">
+                      <ChevronDown className="h-4 w-4 text-slate-500" />
+                    </div>
+                  </div>
+
+                  <div className="w-24">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Quantity</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={item.quantity}
+                      onChange={(e) => updateItem(index, 'quantity', parseInt(e.target.value) || 1)}
+                      className="w-full px-3 py-2 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm font-medium"
+                    />
+                  </div>
+
+                  <div className="w-28">
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">Subtotal</label>
+                    <div className="px-3 py-2 bg-slate-100 rounded-lg text-slate-900 font-bold text-sm">
+                      ${((products.find((p) => p.PRODUCT_NUMBER === item.productId)?.UNIT_PRICE || 0) * item.quantity).toFixed(2)}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => removeItem(index)}
+                    disabled={formData.items.length === 1}
+                    className="mt-6 p-2 text-red-600 hover:bg-red-50 rounded-lg transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+              <div className="mt-4 p-5 bg-white rounded-xl border-2 border-slate-200 flex justify-between items-center">
+                <span className="text-sm text-slate-600">Total Amount</span>
+                <span className="text-2xl font-bold text-emerald-600">
+                  ${calculateTotal().toFixed(2)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer Actions */}
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-6 py-3 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition-all font-semibold"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="flex-1 px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all font-semibold"
+            >
+              {mode === 'create' ? 'Create Order' : 'Update Order'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

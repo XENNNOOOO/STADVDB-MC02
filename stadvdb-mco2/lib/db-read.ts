@@ -1,47 +1,66 @@
 import { getConnection } from './connections';
-import type { Connection, RowDataPacket } from 'mysql2/promise'; 
+import type { Connection, RowDataPacket } from 'mysql2/promise';
 import type { Order, Product, NodeName } from './types';
 
 /**
- * READ (All Orders for a Year)
+ * READ (Orders for a Year with Pagination)
  * Implements 3-step failover logic based on your spec.
  */
-export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> => {
+export const getOrdersByYear = async (
+  year: '2024' | '2025',
+  limit?: number,
+  offset?: number
+): Promise<{ orders: Order[], total: number }> => {
   const readPath: NodeName[] =
     year === '2025'
-      ? ['node1', 'central', 'node2'] 
-      : ['node2', 'central', 'node1']; 
+      ? ['node1', 'central', 'node2']
+      : ['node2', 'central', 'node1'];
 
   let connection: Connection | undefined;
-  
+
   for (const node of readPath) {
     try {
       console.log(`READ [${year}]: Trying Node ${node}...`);
-      connection = await getConnection(node); 
-      
+      connection = await getConnection(node);
+
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
-      
+
+      // First get total count
+      const [countResult] = await connection.execute<RowDataPacket[]>(
+        `SELECT COUNT(DISTINCT o.id) as total_count
+         FROM Orders o
+         WHERE YEAR(o.deliveryDate) = ?`,
+        [year]
+      );
+      const total = countResult[0].total_count;
+
+      // Then get paginated orders with dynamic LIMIT using string interpolation to avoid parameter binding issues
+      const actualLimit = limit || 50;
+      const actualOffset = offset || 0;
+
       const [rows] = await connection.execute<RowDataPacket[]>(
-        `SELECT 
-            o.orderNumber as ORDER_NUMBER, 
+        `SELECT
+            o.orderNumber as ORDER_NUMBER,
             o.userId as CUSTOMER_NUMBER,
-            o.createdAt as ORDER_DATE, 
+            o.createdAt as ORDER_DATE,
             o.deliveryDate as DELIVERY_DATE,
             COALESCE(SUM(oi.quantity * p.price), 0) as TOTAL_AMOUNT
          FROM Orders o
          LEFT JOIN OrderItems oi ON o.id = oi.OrderId
          LEFT JOIN Products p ON oi.ProductId = p.id
          WHERE YEAR(o.deliveryDate) = ?
-         GROUP BY o.id, o.orderNumber, o.userId, o.createdAt, o.deliveryDate`,
+         GROUP BY o.id, o.orderNumber, o.userId, o.createdAt, o.deliveryDate
+         ORDER BY o.createdAt DESC
+         LIMIT ${actualLimit} OFFSET ${actualOffset}`,
         [year]
       );
-      
+
       await connection.end();
-      
-      console.log(`READ [${year}]: Success on Node ${node}. Fetched ${rows.length} orders.`);
-      
-      return rows as Order[];
-    
+
+      console.log(`READ [${year}]: Success on Node ${node}. Fetched ${rows.length} orders (total: ${total}).`);
+
+      return { orders: rows as Order[], total };
+
     } catch (err: any) {
       console.warn(`READ: Node ${node} failed. (${err.message}). Failing over...`);
       if (connection) await connection.end();
@@ -54,32 +73,32 @@ export const getOrdersByYear = async (year: '2024' | '2025'): Promise<Order[]> =
 
 /**
  * READ (Single Order)
- * takes the 'year' as a signal from the API 
+ * takes the 'year' as a signal from the API
  * directed 3-step failover path.
  */
 export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<any | null> => {
-  
+
   const readPath: NodeName[] =
     year === '2025'
-      ? ['node1', 'central', 'node2'] 
-      : ['node2', 'central', 'node1']; 
-  
+      ? ['node1', 'central', 'node2']
+      : ['node2', 'central', 'node1'];
+
   let connection: Connection | undefined;
-  
+
   for (const node of readPath) {
     try {
       console.log(`READ [${id}]: Trying Node ${node}...`);
       connection = await getConnection(node);
-      
+
       // Use READ COMMITTED for consistent reads without locking gaps
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED;');
-      
+
       // We JOIN tables to get Order info, Item info, and Product Price info
       const [rows]: any[] = await connection.execute(
-        `SELECT 
-           o.orderNumber, 
-           o.userId, 
-           o.deliveryDate, 
+        `SELECT
+           o.orderNumber,
+           o.userId,
+           o.deliveryDate,
            o.createdAt,
            oi.quantity,
            p.name as productName,
@@ -90,11 +109,11 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
          WHERE o.orderNumber = ?`,
         [id]
       );
-      
+
       await connection.end();
-      
+
       // If no rows returned, order doesn't exist
-      if (rows.length === 0) continue; 
+      if (rows.length === 0) continue;
 
       console.log(`READ [${id}]: Found on Node ${node}. Parsing...`);
 
@@ -114,7 +133,7 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
         if (row.productName) { // check if items exist
           const lineTotal = row.quantity * row.unitPrice;
           order.totalAmount += lineTotal;
-          
+
           order.items.push({
             productName: row.productName,
             quantity: row.quantity,
@@ -125,7 +144,7 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
       });
 
       return order;
-      
+
     } catch (err: any) {
       console.warn(`READ: Node ${node} failed. (${err.message}). skipping...`);
       if (connection) await connection.end();
@@ -141,13 +160,13 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
  * tries the local nodes first, before failing over
  */
 export const getProducts = async (year: '2024' | '2025'): Promise<Product[]> => {
-  
+
   // determine the most efficient read path based on the user's context
   const readPath: NodeName[] =
     year === '2025'
       ? ['node1', 'central', 'node2']   // Try Node 1 first then failover if needed
       : ['node2', 'central', 'node1'];  // Try Node 2 first
-  
+
   let connection: Connection | undefined;
 
   // loop through the path until one succeeds
@@ -156,23 +175,23 @@ export const getProducts = async (year: '2024' | '2025'): Promise<Product[]> => 
       console.log(`READ [Products, context=${year}]: Trying Node ${node}...`);
       connection = await getConnection(node);
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
-      
+
       const [rows] = await connection.execute(
         `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE
          FROM Products`
       );
-      
+
       await connection.end();
       console.log(`READ [Products]: Success on Node ${node}.`);
-      return rows as Product[]; 
-    
+      return rows as Product[];
+
     } catch (err: any) {
       console.warn(`READ [Products]: Node ${node} failed. (${err.message}). Failing over...`);
       if (connection) await connection.end();
       // Loop continues to the next node
     }
   }
-  
+
   // if all 3 nodes failed
   throw new Error(`All nodes are unavailable. Cannot fetch products.`);
 };
