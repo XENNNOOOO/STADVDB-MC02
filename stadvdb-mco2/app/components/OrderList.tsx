@@ -9,7 +9,9 @@ interface Order {
   CUSTOMER_NUMBER: string;
   ORDER_DATE: string;
   DELIVERY_DATE: string;
+  DELIVERY_RIDER_ID?: string;
   TOTAL_AMOUNT: number;
+  items?: any[];
   NODE_ACCESSED?: string;
   FAILOVER_PATH?: string[];
 }
@@ -42,7 +44,7 @@ type YearFilterType = 'all' | '2024' | '2025';
 type ModalMode = 'view' | 'edit' | 'create' | 'delete' | null;
 
 export default function OrderList() {
-  const [filter, setFilter] = useState<YearFilterType>('2025');
+  const [filter, setFilter] = useState<YearFilterType>('all');
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [modalMode, setModalMode] = useState<ModalMode>(null);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -60,7 +62,7 @@ export default function OrderList() {
   useEffect(() => {
     const fetchProducts = async () => {
       try {
-        const response = await fetch('/api/products?year=2025');
+        const response = await fetch('/api/products');
         const result: APIResponse<Product[]> = await response.json();
 
         if (result.success && result.data) {
@@ -76,6 +78,7 @@ export default function OrderList() {
     fetchProducts();
   }, []);
 
+
   // Fetch orders based on filter and pagination
   useEffect(() => {
     const fetchOrders = async () => {
@@ -83,13 +86,18 @@ export default function OrderList() {
       setError(null);
 
       try {
-        // For "all" filter, default to 2025 to avoid complexity
-        // User can switch to specific year for better performance
-        const year = filter === 'all' ? '2025' : filter;
+        
+        // If 'all', we omit the 'year' param so the API hits Node 0 (Central).
+        const params = new URLSearchParams();
+        
+        if (filter !== 'all') {
+          params.append('year', filter);
+        }
+        
+        params.append('page', currentPage.toString());
+        params.append('limit', pageSize.toString());
 
-        const response = await fetch(
-          `/api/orders?year=${year}&page=${currentPage}&limit=${pageSize}`
-        );
+        const response = await fetch(`/api/orders?${params.toString()}`);
 
         if (!response.ok) {
           throw new Error(`Failed to fetch orders: ${response.statusText}`);
@@ -135,13 +143,7 @@ export default function OrderList() {
     };
   }, [modalMode]);
 
-  const filteredOrders = orders.filter((order) => {
-    const year = parseInt(order.DELIVERY_DATE.slice(0, 4));
-    if (filter === '2024') return year <= 2024;
-    if (filter === '2025') return year >= 2025;
-    return true;
-  });
-
+  const filteredOrders = orders; 
 
   const openModal = (mode: ModalMode, order?: Order) => {
     setSelectedOrder(order || null);
@@ -155,12 +157,12 @@ export default function OrderList() {
 
   const handleFilterChange = (newFilter: YearFilterType) => {
     setFilter(newFilter);
-    setCurrentPage(1); // Reset to first page when filter changes
+    setCurrentPage(1); 
   };
 
   const handlePageSizeChange = (newSize: number) => {
     setPageSize(newSize);
-    setCurrentPage(1); // Reset to first page when page size changes
+    setCurrentPage(1); 
   };
 
   return (
@@ -177,9 +179,9 @@ export default function OrderList() {
                 onChange={(e) => handleFilterChange(e.target.value as YearFilterType)}
                 className="appearance-none pl-4 pr-10 py-2.5 text-sm font-semibold border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white text-slate-700 cursor-pointer hover:bg-slate-50 transition-colors"
               >
-                <option value="all">All Years</option>
-                <option value="2025">2025</option>
-                <option value="2024">2024</option>
+                <option value="all">All Years (Central)</option>
+                <option value="2025">2025 (Node 1)</option>
+                <option value="2024">2024 (Node 2)</option>
               </select>
               <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
                 <svg className="h-5 w-5 text-slate-500" viewBox="0 0 20 20" fill="currentColor">
@@ -222,6 +224,9 @@ export default function OrderList() {
                 <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
                   Rider ID
                 </th>
+                 <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  Total
+                </th>
                 <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
                   Actions
                 </th>
@@ -244,7 +249,10 @@ export default function OrderList() {
                     {new Date(order.DELIVERY_DATE).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600">
-                    {'Not Assigned'}
+                    {order.DELIVERY_RIDER_ID || 'Pending'}
+                  </td>
+                   <td className="px-6 py-4 whitespace-nowrap text-center text-emerald-600 font-bold">
+                    ${typeof order.TOTAL_AMOUNT === 'number' ? order.TOTAL_AMOUNT.toFixed(2) : order.TOTAL_AMOUNT}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-center">
                     <div className="flex justify-center gap-2">
@@ -402,44 +410,142 @@ interface OrderModalProps {
 
 function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderModalProps) {
   const [formData, setFormData] = useState({
-    deliveryDate: order?.deliveryDate || '',
-    items: [{ productId: 1, quantity: 2 }],
+    deliveryDate: order?.DELIVERY_DATE ? new Date(order.DELIVERY_DATE).toISOString().split('T')[0] : '',
+    // FIXED: Use order items directly (which contain productNumber from backend) or default
+    items: order?.items || [{ productNumber: '', quantity: 1 }],
   });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const action = mode === 'create' ? 'Creating' : 'Updating';
-    alert(`[UI-ONLY] ${action} order:\n${JSON.stringify(formData, null, 2)}`);
-    onClose();
+    setLoading(true);
+    setError(null);
+
+    try {
+      // Validate form data
+      if (!formData.deliveryDate) {
+        throw new Error('Delivery date is required');
+      }
+      if (formData.items.length === 0) {
+        throw new Error('At least one item is required');
+      }
+
+      // Validate that all items have products selected
+      for (const item of formData.items) {
+        if (!item.productNumber) {
+          throw new Error('Please select a product for all items');
+        }
+      }
+
+      const orderData = {
+        deliveryDate: formData.deliveryDate,
+        items: formData.items.map(item => ({
+          productNumber: item.productNumber,
+          quantity: item.quantity
+        }))
+      };
+
+      const url = mode === 'create' ? '/api/orders' : `/api/orders/${order?.ORDER_NUMBER}`;
+      const method = mode === 'create' ? 'POST' : 'PUT';
+
+      const response = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(orderData),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to save order');
+      }
+
+      const result = await response.json();
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to save order');
+      }
+
+      // Success - close modal and refresh the order list
+      onClose();
+
+      // Trigger a page reload to refresh the order list
+      window.location.reload();
+
+    } catch (err: any) {
+      console.error('Error saving order:', err);
+      setError(err.message || 'Failed to save order');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleDelete = () => {
-    alert(`[UI-ONLY] Deleting order ${order?.orderNumber}`);
-    onClose();
+  const handleDelete = async () => {
+    if (!order) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch(`/api/orders/${order.ORDER_NUMBER}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to delete order');
+      }
+
+      const result = await response.json();
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to delete order');
+      }
+
+      // Success - close modal and refresh the order list
+      onClose();
+
+      // Trigger a page reload to refresh the order list
+      window.location.reload();
+
+    } catch (err: any) {
+      console.error('Error deleting order:', err);
+      setError(err.message || 'Failed to delete order');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const calculateTotal = () => {
-    return formData.items.reduce((total, item) => {
-      const product = products.find((p) => p.PRODUCT_NUMBER === item.productId);
-      return total + (product?.UNIT_PRICE || 0) * item.quantity;
+    return formData.items.reduce((total: number, item: any) => {
+      // Handle both cases: creating new (has productNumber) or viewing existing (has unitPrice in item or needs lookup)
+      let price = item.unitPrice;
+      if (!price) {
+          // Loose comparison '==' handles number vs string mismatch for product IDs
+          const product = products.find((p) => p.PRODUCT_NUMBER == item.productNumber);
+          price = product?.UNIT_PRICE || 0;
+      }
+      return total + price * item.quantity;
     }, 0);
   };
 
   const addItem = () => {
     setFormData({
       ...formData,
-      items: [...formData.items, { productId: 0, quantity: 1 }],
+      items: [...formData.items, { productNumber: '', quantity: 1 }],
     });
   };
 
   const removeItem = (index: number) => {
     setFormData({
       ...formData,
-      items: formData.items.filter((_, i) => i !== index),
+      items: formData.items.filter((_: any, i: number) => i !== index),
     });
   };
 
-  const updateItem = (index: number, field: 'productId' | 'quantity', value: string | number) => {
+  const updateItem = (index: number, field: 'productNumber' | 'quantity', value: string | number) => {
     const newItems = [...formData.items];
     newItems[index] = { ...newItems[index], [field]: value };
     setFormData({ ...formData, items: newItems });
@@ -455,7 +561,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             <div className="flex justify-between items-start">
               <div>
                 <h3 className="text-2xl font-bold text-slate-900 mb-1">Order Details</h3>
-                <p className="text-slate-500 text-sm font-medium">{order?.orderNumber}</p>
+                <p className="text-slate-500 text-sm font-medium">{order?.ORDER_NUMBER}</p>
               </div>
               <button
                 onClick={onClose}
@@ -472,9 +578,8 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             <div>
               <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Customer Information</h4>
               <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
-                <p className="text-sm text-slate-600 mb-1">Customer ID (Auto-assigned)</p>
-                <p className="text-lg font-bold text-slate-900">{order?.userId}</p>
-                <p className="text-xs text-slate-500 mt-1">Automatically assigned based on delivery year</p>
+                <p className="text-sm text-slate-600 mb-1">Customer ID</p>
+                <p className="text-lg font-bold text-slate-900">{order?.CUSTOMER_NUMBER}</p>
               </div>
             </div>
 
@@ -485,7 +590,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                 <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
                   <p className="text-sm text-slate-600 mb-1">Created At</p>
                   <p className="text-lg font-bold text-slate-900">
-                    {order?.createdAt && new Date(order.createdAt).toLocaleString('en-US', {
+                    {order?.ORDER_DATE && new Date(order.ORDER_DATE).toLocaleString('en-US', {
                       month: '2-digit',
                       day: '2-digit',
                       year: 'numeric',
@@ -498,17 +603,44 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                 </div>
                 <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
                   <p className="text-sm text-slate-600 mb-1">Delivery Date</p>
-                  <p className="text-lg font-bold text-slate-900">{order?.deliveryDate && new Date(order.deliveryDate).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}</p>
+                  <p className="text-lg font-bold text-slate-900">{order?.DELIVERY_DATE && new Date(order.DELIVERY_DATE).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}</p>
                 </div>
+                {/* Rider ID Added back to modal */}
                 <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
-                  <p className="text-sm text-slate-600 mb-1">Delivery Rider ID (Auto-assigned)</p>
-                  <p className="text-lg font-bold text-slate-900">{order?.deliveryRiderId || 'Not Assigned'}</p>
-                  <p className="text-xs text-slate-500 mt-1">Automatically assigned based on delivery year</p>
+                  <p className="text-sm text-slate-600 mb-1">Delivery Rider ID</p>
+                  <p className="text-lg font-bold text-slate-900">{order?.DELIVERY_RIDER_ID || 'Not Assigned'}</p>
                 </div>
-                <div className="p-5 bg-slate-50 rounded-xl border-2 border-slate-200">
-                  <p className="text-sm text-slate-600 mb-1">Last Updated</p>
-                  <p className="text-lg font-bold text-slate-900">{order?.updatedAt && new Date(order.updatedAt).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}</p>
-                </div>
+              </div>
+            </div>
+            
+            {/* Items View */}
+             <div>
+              <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Items</h4>
+              <div className="bg-slate-50 rounded-xl border-2 border-slate-200 overflow-hidden">
+                <table className="min-w-full divide-y divide-slate-200">
+                    <thead className="bg-slate-100">
+                        <tr>
+                            <th className="px-4 py-2 text-left text-xs font-medium text-slate-500 uppercase">Product</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-slate-500 uppercase">Qty</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-slate-500 uppercase">Price</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-slate-500 uppercase">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                        {order?.items?.map((item: any, idx: number) => (
+                            <tr key={idx}>
+                                <td className="px-4 py-2 text-sm text-slate-900">{item.productName}</td>
+                                <td className="px-4 py-2 text-sm text-slate-600 text-right">{item.quantity}</td>
+                                <td className="px-4 py-2 text-sm text-slate-600 text-right">${item.unitPrice}</td>
+                                <td className="px-4 py-2 text-sm text-slate-900 font-medium text-right">${(item.quantity * item.unitPrice).toFixed(2)}</td>
+                            </tr>
+                        ))}
+                         <tr className="bg-slate-100">
+                                <td colSpan={3} className="px-4 py-2 text-sm font-bold text-slate-900 text-right">Grand Total</td>
+                                <td className="px-4 py-2 text-sm font-bold text-emerald-600 text-right">${order?.TOTAL_AMOUNT.toFixed(2)}</td>
+                            </tr>
+                    </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -544,7 +676,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             <div className="flex justify-between items-start">
               <div>
                 <h3 className="text-2xl font-bold text-slate-900 mb-1">Delete Order</h3>
-                <p className="text-slate-500 text-sm font-medium">{order?.orderNumber}</p>
+                <p className="text-slate-500 text-sm font-medium">{order?.ORDER_NUMBER}</p>
               </div>
               <button
                 onClick={onClose}
@@ -565,6 +697,13 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             <p className="text-sm text-slate-600">
               This will permanently remove the order from all nodes in the distributed database. This action cannot be undone.
             </p>
+
+            {/* Error message */}
+            {error && (
+              <div className="mt-4 p-4 bg-red-50 rounded-lg border border-red-200">
+                <p className="text-red-600 text-sm font-medium">{error}</p>
+              </div>
+            )}
           </div>
 
           {/* Footer Actions */}
@@ -600,7 +739,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                 {mode === 'create' ? 'Create New Order' : 'Edit Order'}
               </h3>
               {mode === 'edit' && (
-                <p className="text-slate-500 text-sm font-medium">{order?.orderNumber}</p>
+                <p className="text-slate-500 text-sm font-medium">{order?.ORDER_NUMBER}</p>
               )}
             </div>
             <button
@@ -656,7 +795,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
               </div>
 
             <div className="space-y-3">
-              {formData.items.map((item, index) => (
+              {formData.items.map((item: any, index: number) => (
                 <div
                   key={index}
                   className="flex gap-3 items-start p-4 bg-white rounded-lg border-2 border-slate-200"
@@ -664,8 +803,10 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                   <div className="flex-1 relative">
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Product</label>
                     <select
-                      value={item.productId}
-                      onChange={(e) => updateItem(index, 'productId', parseInt(e.target.value) || 0)}
+                      // CRITICAL FIX: Use item.productNumber consistently. Fallback to finding it via name if editing legacy data.
+                      value={item.productNumber || (item.productName ? products.find(p => p.PRODUCT_NAME === item.productName)?.PRODUCT_NUMBER : "")}
+                      // CRITICAL FIX: Update 'productNumber' directly
+                      onChange={(e) => updateItem(index, 'productNumber', parseInt(e.target.value) || 0)}
                       className="w-full appearance-none px-3 py-2 pr-10 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm font-medium bg-white cursor-pointer text-slate-700"
                     >
                       <option value="">Select a product</option>
@@ -694,7 +835,8 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                   <div className="w-28">
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Subtotal</label>
                     <div className="px-3 py-2 bg-slate-100 rounded-lg text-slate-900 font-bold text-sm">
-                      ${((products.find((p) => p.PRODUCT_NUMBER === item.productId)?.UNIT_PRICE || 0) * item.quantity).toFixed(2)}
+                      {/* Lookup unit price using productNumber or fallback to item's stored unitPrice */}
+                      ${((products.find((p) => p.PRODUCT_NUMBER == item.productNumber)?.UNIT_PRICE || item.unitPrice || 0) * item.quantity).toFixed(2)}
                     </div>
                   </div>
 

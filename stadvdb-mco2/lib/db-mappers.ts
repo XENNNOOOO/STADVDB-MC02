@@ -105,7 +105,14 @@ export interface APIResponse<T = any> {
   message?: string;
   failover_info?: {
     used_node: string;
-    attempts: string[];
+    attempts?: string[];
+    pagination?: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+      hasMore: boolean;
+    };
   };
   error?: string;
   details?: any;
@@ -114,7 +121,17 @@ export interface APIResponse<T = any> {
 export const createSuccessResponse = <T>(
   data: T,
   message?: string,
-  failoverInfo?: { used_node: string; attempts: string[] }
+  failoverInfo?: {
+    used_node: string;
+    attempts?: string[];
+    pagination?: {
+      page: number;
+      limit: number;
+      total: number;
+      totalPages: number;
+      hasMore: boolean;
+    };
+  }
 ): APIResponse<T> => {
   return {
     success: true,
