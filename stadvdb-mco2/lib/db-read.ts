@@ -31,6 +31,7 @@ const parseOrderItems = (rows: any[]): Order[] => {
 };
 
 
+
 export const getAllOrders = async (
   limit?: number,
   offset?: number
@@ -54,16 +55,18 @@ export const getAllOrders = async (
       const actualLimit = limit || 50;
       const actualOffset = offset || 0;
 
+      // UPDATED QUERY: Added productNumber to JSON_OBJECT
       const [rows] = await connection.execute<RowDataPacket[]>(
         `SELECT
             o.orderNumber as ORDER_NUMBER,
             o.userId as CUSTOMER_NUMBER,
-            o.deliveryRiderId as DELIVERY_RIDER_ID,  -- <--- ADDED COLUMN
+            o.deliveryRiderId as DELIVERY_RIDER_ID,
             o.createdAt as ORDER_DATE,
             o.deliveryDate as DELIVERY_DATE,
             COALESCE(SUM(oi.quantity * p.price), 0) as TOTAL_AMOUNT,
             JSON_ARRAYAGG(
               JSON_OBJECT(
+                'productNumber', p.id,
                 'productName', p.name,
                 'quantity', oi.quantity,
                 'unitPrice', p.price
@@ -124,16 +127,18 @@ export const getOrdersByYear = async (
       const actualLimit = limit || 50;
       const actualOffset = offset || 0;
 
+      // UPDATED QUERY: Added productNumber to JSON_OBJECT
       const [rows] = await connection.execute<RowDataPacket[]>(
         `SELECT
             o.orderNumber as ORDER_NUMBER,
             o.userId as CUSTOMER_NUMBER,
-            o.deliveryRiderId as DELIVERY_RIDER_ID, -- <--- ADDED COLUMN
+            o.deliveryRiderId as DELIVERY_RIDER_ID,
             o.createdAt as ORDER_DATE,
             o.deliveryDate as DELIVERY_DATE,
             COALESCE(SUM(oi.quantity * p.price), 0) as TOTAL_AMOUNT,
             JSON_ARRAYAGG(
               JSON_OBJECT(
+                'productNumber', p.id,
                 'productName', p.name,
                 'quantity', oi.quantity,
                 'unitPrice', p.price
@@ -260,15 +265,35 @@ export const getProducts = async (year: '2024' | '2025'): Promise<Product[]> => 
   throw new Error(`All nodes are unavailable. Cannot fetch products.`);
 };
 
-export const getProductsFromMaster = async (connection: Connection): Promise<Product[]> => {
-  try {
-    await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
-    const [rows] = await connection.execute(
-      `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE FROM Products`
-    );
-    return rows as Product[];
-  } catch (err: any) {
-    console.error("RECOVERY: FAILED to get product list from master.", err.message);
-    throw err; 
+
+export const getAllProducts = async (): Promise<Product[]> => {
+  // Prioritize Central (Node 0) as it is the master source for products.
+  const readPath: NodeName[] = ['central', 'node1', 'node2'];
+  
+  let connection: Connection | undefined;
+
+  for (const node of readPath) {
+    try {
+      console.log(`READ [Products, ALL]: Trying Node ${node}...`);
+      connection = await getConnection(node);
+      
+      // Use READ UNCOMMITTED for product lists (high concurrency)
+      await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
+      
+      const [rows] = await connection.execute(
+        `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE 
+         FROM Products`
+      );
+      
+      await connection.end();
+      console.log(`READ [Products, ALL]: Success on Node ${node}.`);
+      return rows as Product[]; 
+    
+    } catch (err: any) {
+      console.warn(`READ [Products, ALL]: Node ${node} failed. (${err.message}). Failing over...`);
+      if (connection) await connection.end();
+    }
   }
+  
+  throw new Error(`All nodes are unavailable. Cannot fetch products.`);
 };

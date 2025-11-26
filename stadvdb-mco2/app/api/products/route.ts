@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getProducts } from '@/lib/db-read';
+import { getProducts, getAllProducts } from '@/lib/db-read';
 import {
   createSuccessResponse,
   createErrorResponse
@@ -11,18 +11,28 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const yearParam = searchParams.get('year');
 
-    // Year is used as context for optimal node selection in failover
-    const year: '2024' | '2025' = yearParam === '2024' ? '2024' : '2025';
+    let products;
+    let contextMsg;
 
-    console.log(`API: GET /api/products?year=${year} - Starting failover read with year context...`);
-
-    const products = await getProducts(year);
+    // if year provided, use context optimization. Else, fetch from Master/Central with Failover.
+    if (yearParam === '2024' || yearParam === '2025') {
+      console.log(`API: GET /api/products?year=${yearParam} - Starting failover read with year context...`);
+      products = await getProducts(yearParam);
+      contextMsg = `Retrieved ${products.length} products (context: ${yearParam})`;
+    } else {
+      console.log(`API: GET /api/products - Starting Master/Central read with failover...`);
+      products = await getAllProducts();
+      contextMsg = `Retrieved ${products.length} products (Master List)`;
+    }
 
     return NextResponse.json(
       createSuccessResponse(
         products,
-        `Retrieved ${products.length} products (context: ${year})`,
-        { used_node: 'Determined by failover logic', attempts: ['See server logs'] }
+        contextMsg,
+        { 
+          used_node: yearParam ? 'Determined by context logic' : 'Central (or failover)', 
+          attempts: ['See server logs'] 
+        }
       ),
       { status: 200 }
     );
@@ -31,7 +41,7 @@ export async function GET(request: NextRequest) {
     console.error('API: GET /api/products failed:', error.message);
 
     // Check if it's a "all nodes unavailable" error
-    if (error.message.includes('All nodes are unavailable')) {
+    if (error.message.includes('unavailable')) {
       return NextResponse.json(
         createErrorResponse('All database nodes are unavailable', error.message),
         { status: 503 }

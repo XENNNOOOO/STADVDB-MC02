@@ -9,9 +9,9 @@ interface Order {
   CUSTOMER_NUMBER: string;
   ORDER_DATE: string;
   DELIVERY_DATE: string;
-  DELIVERY_RIDER_ID?: string; // Added Rider ID to interface
+  DELIVERY_RIDER_ID?: string;
   TOTAL_AMOUNT: number;
-  items?: any[]; // Added to match new backend response
+  items?: any[];
   NODE_ACCESSED?: string;
   FAILOVER_PATH?: string[];
 }
@@ -44,7 +44,7 @@ type YearFilterType = 'all' | '2024' | '2025';
 type ModalMode = 'view' | 'edit' | 'create' | 'delete' | null;
 
 export default function OrderList() {
-  const [filter, setFilter] = useState<YearFilterType>('all'); // Default to 'all' now
+  const [filter, setFilter] = useState<YearFilterType>('all');
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [modalMode, setModalMode] = useState<ModalMode>(null);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -62,7 +62,7 @@ export default function OrderList() {
   useEffect(() => {
     const fetchProducts = async () => {
       try {
-        const response = await fetch('/api/products?year=2025');
+        const response = await fetch('/api/products');
         const result: APIResponse<Product[]> = await response.json();
 
         if (result.success && result.data) {
@@ -78,6 +78,7 @@ export default function OrderList() {
     fetchProducts();
   }, []);
 
+
   // Fetch orders based on filter and pagination
   useEffect(() => {
     const fetchOrders = async () => {
@@ -85,8 +86,7 @@ export default function OrderList() {
       setError(null);
 
       try {
-        // --- CRITICAL FIX START ---
-        // Build query params dynamically.
+        
         // If 'all', we omit the 'year' param so the API hits Node 0 (Central).
         const params = new URLSearchParams();
         
@@ -98,7 +98,6 @@ export default function OrderList() {
         params.append('limit', pageSize.toString());
 
         const response = await fetch(`/api/orders?${params.toString()}`);
-        // --- CRITICAL FIX END ---
 
         if (!response.ok) {
           throw new Error(`Failed to fetch orders: ${response.statusText}`);
@@ -144,8 +143,6 @@ export default function OrderList() {
     };
   }, [modalMode]);
 
-  // Client-side filtering is no longer needed strictly for logic, 
-  // but kept if you want immediate visual feedback before the API loads
   const filteredOrders = orders; 
 
   const openModal = (mode: ModalMode, order?: Order) => {
@@ -160,12 +157,12 @@ export default function OrderList() {
 
   const handleFilterChange = (newFilter: YearFilterType) => {
     setFilter(newFilter);
-    setCurrentPage(1); // Reset to first page when filter changes
+    setCurrentPage(1); 
   };
 
   const handlePageSizeChange = (newSize: number) => {
     setPageSize(newSize);
-    setCurrentPage(1); // Reset to first page when page size changes
+    setCurrentPage(1); 
   };
 
   return (
@@ -224,7 +221,6 @@ export default function OrderList() {
                 <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
                   Delivery Date
                 </th>
-                {/* Rider ID Column Added */}
                 <th className="px-6 py-3 text-center text-xs font-bold text-slate-700 uppercase tracking-wider">
                   Rider ID
                 </th>
@@ -252,7 +248,6 @@ export default function OrderList() {
                   <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600">
                     {new Date(order.DELIVERY_DATE).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })}
                   </td>
-                   {/* Rider ID Data Added */}
                   <td className="px-6 py-4 whitespace-nowrap text-center text-slate-600">
                     {order.DELIVERY_RIDER_ID || 'Pending'}
                   </td>
@@ -416,6 +411,7 @@ interface OrderModalProps {
 function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderModalProps) {
   const [formData, setFormData] = useState({
     deliveryDate: order?.DELIVERY_DATE ? new Date(order.DELIVERY_DATE).toISOString().split('T')[0] : '',
+    // FIXED: Use order items directly (which contain productNumber from backend) or default
     items: order?.items || [{ productNumber: '', quantity: 1 }],
   });
   const [loading, setLoading] = useState(false);
@@ -527,6 +523,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
       // Handle both cases: creating new (has productNumber) or viewing existing (has unitPrice in item or needs lookup)
       let price = item.unitPrice;
       if (!price) {
+          // Loose comparison '==' handles number vs string mismatch for product IDs
           const product = products.find((p) => p.PRODUCT_NUMBER == item.productNumber);
           price = product?.UNIT_PRICE || 0;
       }
@@ -719,11 +716,10 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             </button>
             <button
               onClick={handleDelete}
-              disabled={loading}
-              className="flex-1 px-5 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all font-semibold flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1 px-5 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all font-semibold flex items-center justify-center gap-2"
             >
               <Trash2 size={18} />
-              {loading ? 'Deleting...' : 'Delete'}
+              Delete
             </button>
           </div>
         </div>
@@ -775,7 +771,9 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                   />
                 </div>
                 <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
-
+                  <p className="text-sm text-blue-700 font-medium">
+                    📋 Customer and rider information will be automatically assigned based on the delivery year.
+                  </p>
                 </div>
               </div>
             </div>
@@ -805,8 +803,10 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                   <div className="flex-1 relative">
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Product</label>
                     <select
+                      // CRITICAL FIX: Use item.productNumber consistently. Fallback to finding it via name if editing legacy data.
                       value={item.productNumber || (item.productName ? products.find(p => p.PRODUCT_NAME === item.productName)?.PRODUCT_NUMBER : "")}
-                      onChange={(e) => updateItem(index, 'productNumber', e.target.value)}
+                      // CRITICAL FIX: Update 'productNumber' directly
+                      onChange={(e) => updateItem(index, 'productNumber', parseInt(e.target.value) || 0)}
                       className="w-full appearance-none px-3 py-2 pr-10 border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-sm font-medium bg-white cursor-pointer text-slate-700"
                     >
                       <option value="">Select a product</option>
@@ -835,6 +835,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
                   <div className="w-28">
                     <label className="block text-xs font-semibold text-slate-700 mb-1">Subtotal</label>
                     <div className="px-3 py-2 bg-slate-100 rounded-lg text-slate-900 font-bold text-sm">
+                      {/* Lookup unit price using productNumber or fallback to item's stored unitPrice */}
                       ${((products.find((p) => p.PRODUCT_NUMBER == item.productNumber)?.UNIT_PRICE || item.unitPrice || 0) * item.quantity).toFixed(2)}
                     </div>
                   </div>
@@ -860,31 +861,20 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
             </div>
           </div>
 
-          {/* Error message */}
-          {error && (
-            <div className="px-8 pb-4">
-              <div className="p-4 bg-red-50 rounded-lg border border-red-200">
-                <p className="text-red-600 text-sm font-medium">{error}</p>
-              </div>
-            </div>
-          )}
-
           {/* Footer Actions */}
-          <div className="flex gap-3 pt-2 px-8 pb-8">
+          <div className="flex gap-3 pt-2">
             <button
               type="button"
               onClick={onClose}
-              disabled={loading}
-              className="flex-1 px-6 py-3 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition-all font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1 px-6 py-3 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition-all font-semibold"
             >
               Cancel
             </button>
             <button
               type="submit"
-              disabled={loading}
-              className="flex-1 px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex-1 px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all font-semibold"
             >
-              {loading ? 'Saving...' : (mode === 'create' ? 'Create Order' : 'Update Order')}
+              {mode === 'create' ? 'Create Order' : 'Update Order'}
             </button>
           </div>
         </form>
