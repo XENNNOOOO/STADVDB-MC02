@@ -2,7 +2,6 @@ import { getConnection } from './connections';
 import type { Connection, RowDataPacket } from 'mysql2/promise';
 import type { Order, Product, NodeName } from './types';
 
-
 const parseOrderItems = (rows: any[]): Order[] => {
   return rows.map(row => {
     let parsedItems = [];
@@ -30,8 +29,6 @@ const parseOrderItems = (rows: any[]): Order[] => {
   });
 };
 
-
-
 export const getAllOrders = async (
   limit?: number,
   offset?: number
@@ -55,7 +52,6 @@ export const getAllOrders = async (
       const actualLimit = limit || 50;
       const actualOffset = offset || 0;
 
-      // UPDATED QUERY: Added productNumber to JSON_OBJECT
       const [rows] = await connection.execute<RowDataPacket[]>(
         `SELECT
             o.orderNumber as ORDER_NUMBER,
@@ -96,7 +92,6 @@ export const getAllOrders = async (
   throw new Error("All nodes are unavailable. Cannot fetch complete order list.");
 };
 
-
 export const getOrdersByYear = async (
   year: '2024' | '2025',
   limit?: number,
@@ -127,7 +122,6 @@ export const getOrdersByYear = async (
       const actualLimit = limit || 50;
       const actualOffset = offset || 0;
 
-      // UPDATED QUERY: Added productNumber to JSON_OBJECT
       const [rows] = await connection.execute<RowDataPacket[]>(
         `SELECT
             o.orderNumber as ORDER_NUMBER,
@@ -170,7 +164,10 @@ export const getOrdersByYear = async (
   throw new Error(`All nodes for ${year} data are unavailable.`);
 };
 
-
+/**
+ * READ (Single Order)
+ * Uses READ COMMITTED + FOR SHARE to ensure we block if a Write Lock is active.
+ */
 export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<any | null> => {
   const readPath: NodeName[] =
     year === '2025'
@@ -183,8 +180,12 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
     try {
       console.log(`READ [${id}]: Trying Node ${node}...`);
       connection = await getConnection(node);
+      
+      // Read Committed
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED;');
 
+      // Lock: 'FOR SHARE' 
+      // if an editor holds an X-Lock, this query will wait.
       const [rows]: any[] = await connection.execute(
         `SELECT
            o.orderNumber,
@@ -194,11 +195,13 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
            o.createdAt,
            oi.quantity,
            p.name as productName,
-           p.price as unitPrice
+           p.price as unitPrice,
+           p.id as productNumber
          FROM Orders o
          LEFT JOIN OrderItems oi ON o.id = oi.OrderId
          LEFT JOIN Products p ON oi.ProductId = p.id
-         WHERE o.orderNumber = ?`,
+         WHERE o.orderNumber = ?
+         FOR SHARE`, 
         [id]
       );
 
@@ -210,7 +213,6 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
       const order = {
         orderNumber: rows[0].orderNumber,
         customerNumber: rows[0].userId,
-        // Added Mapping Here
         deliveryRiderId: rows[0].deliveryRiderId, 
         orderDate: rows[0].createdAt,
         deliveryDate: rows[0].deliveryDate,
@@ -223,6 +225,7 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
           const lineTotal = row.quantity * row.unitPrice;
           order.totalAmount += lineTotal;
           order.items.push({
+            productNumber: row.productNumber,
             productName: row.productName,
             quantity: row.quantity,
             unitPrice: row.unitPrice,
@@ -265,9 +268,7 @@ export const getProducts = async (year: '2024' | '2025'): Promise<Product[]> => 
   throw new Error(`All nodes are unavailable. Cannot fetch products.`);
 };
 
-
 export const getAllProducts = async (): Promise<Product[]> => {
-  // Prioritize Central (Node 0) as it is the master source for products.
   const readPath: NodeName[] = ['central', 'node1', 'node2'];
   
   let connection: Connection | undefined;
@@ -277,7 +278,6 @@ export const getAllProducts = async (): Promise<Product[]> => {
       console.log(`READ [Products, ALL]: Trying Node ${node}...`);
       connection = await getConnection(node);
       
-      // Use READ UNCOMMITTED for product lists (high concurrency)
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
       
       const [rows] = await connection.execute(

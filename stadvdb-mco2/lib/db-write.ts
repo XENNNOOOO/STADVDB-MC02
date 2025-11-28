@@ -5,31 +5,25 @@ import { getProducts } from './db-read';
 import type { Connection } from 'mysql2/promise';
 import type { OrderFormData, Product } from './types';
 
-/**
- * Calculates the total amount for an order.
- * must be called before any write transaction.
- * uses getProducts function which has its own failover.
- */
+interface TableOptions {
+  ordersTable?: string;
+  itemsTable?: string;
+  productsTable?: string;
+}
+
 const calculateTotalAmount = async (
   items: { productNumber: string; quantity: number }[],
   year: '2024' | '2025'
 ): Promise<number> => {
   let total = 0;
   try {
-    // get all products. Use the year as a "hint" for the most efficient node
-    // getProducts is fault-tolerant and will check all 3 nodes.
     const products: Product[] = await getProducts(year);
-
-    // create a price map for efficient lookups
     const priceMap = new Map<string, number>();
     products.forEach(p => {
-      // Convert product number to string for consistent lookup
       priceMap.set(p.PRODUCT_NUMBER.toString(), p.UNIT_PRICE);
     });
 
-    // calculate the total
     for (const item of items) {
-      // Ensure productNumber is treated as string for lookup
       const price = priceMap.get(item.productNumber.toString());
       if (!price) {
         throw new Error(`Invalid product number: ${item.productNumber}`);
@@ -40,49 +34,34 @@ const calculateTotalAmount = async (
 
   } catch (err: any) {
     console.error("FATAL: Could not calculate total amount.", err.message);
-    // if we can't get product prices, we must fail the transaction. (this means that all nodes are down or product data is corrupt)
     throw new Error(`Could not calculate total: ${err.message}`);
   }
 };
 
 
-/**
- * CREATE ORDER
- * implements full Primary/Failover/Emergency WRITE logic.
- */
 export const createOrder = async (orderData: OrderFormData): Promise<string> => {
-  // determine Write Paths from Fragmentation Key
   const { deliveryDate } = orderData;
   const year = new Date(deliveryDate).getFullYear() === 2025 ? '2025' : '2024';
 
-  // Ensure orderNumber is set (should be handled by API layer)
-  if (!orderData.orderNumber) {
-    throw new Error('Order number is required');
-  }
+  if (!orderData.orderNumber) throw new Error('Order number is required');
   const orderNumber = orderData.orderNumber;
 
-  // Calculate total amount *once* at the beginning.
   const totalAmount = await calculateTotalAmount(orderData.items, year);
 
-  // determine failover paths
   const failoverNode = year === '2025' ? 'node1' : 'node2';
   const emergencyNode = year === '2025' ? 'node2' : 'node1';
 
-  // try to write to PRIMARY (Node 0)
   let connection: Connection | undefined;
   try {
     console.log(`WRITE [${orderNumber}]: Trying Node 0 (Primary)...`);
     connection = await getConnection('central');
 
-    // Write to Node 0
+    // Write to Node 0 (Standard tables)
     await executeWriteTransaction(connection, orderNumber, orderData, totalAmount);
 
     await connection.end();
 
-    // write successful. asynchronously replicate to replicas.
     console.log(`WRITE [${orderNumber}]: Success on Node 0. Replicating...`);
-
-    // we don't wait for this. let it run in the background.
     replicateWrite(orderNumber, orderData, totalAmount, year);
 
     return orderNumber;
@@ -91,15 +70,14 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
     if (connection) await connection.end();
     console.warn(`WRITE: Node 0 failed. (${err.message}). Failing over...`);
 
-    // try to write to FAILOVER (Node 1 or 2)
+    // FAILOVER (Node 1 or 2)
     try {
       console.log(`WRITE [${orderNumber}]: Trying Node ${failoverNode} (Failover)...`);
       connection = await getConnection(failoverNode);
-
-      // write to the local node
+      
+      // On local node, use standard tables
       await executeWriteTransaction(connection, orderNumber, orderData, totalAmount);
-
-      // write succeeded. now we log it back to master
+      
       await logPendingSync(failoverNode, {
         origin_node: failoverNode,
         delivery_date: deliveryDate,
@@ -112,23 +90,19 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
     } catch (failoverErr: any) {
       if (connection) await connection.end();
       console.warn(`WRITE [${orderNumber}]: Node ${failoverNode} failed. (${failoverErr.message}). Emergency failover...`);
-
-      // try to write to EMERGENCY (Node 2 or 1)
-      // handles Nodes 0+1 Down or 0+2 Down
+      
+      // EMERGENCY (Writes to Log only)
       try {
         console.log(`WRITE [${orderNumber}]: Trying Node ${emergencyNode} (Emergency Log)...`);
-
-        // we do NOT write to the main tables, just the log
         await logEmergencyPendingSync(emergencyNode, {
-          origin_node: failoverNode, // intended origin
+          origin_node: failoverNode,
           delivery_date: deliveryDate,
           order_data: JSON.stringify(orderData),
         });
-
+        
         return `${orderNumber} (Write failed over to emergency log on ${emergencyNode})`;
-
-      } catch (emergencyErr: any)
-      {
+      
+      } catch (emergencyErr: any) {
         console.error(`CRITICAL: All 3 nodes are down. Write failed.`);
         throw new Error("All database nodes are unavailable. Write failed.");
       }
@@ -136,57 +110,47 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
   }
 };
 
-/**
- * UPDATE ORDER
- */
 export const updateOrder = async (id: string, orderData: OrderFormData): Promise<string> => {
   const { deliveryDate } = orderData;
   const year = new Date(deliveryDate).getFullYear() === 2025 ? '2025' : '2024';
-
-  // Calculate total amount once at the beginning.
   const totalAmount = await calculateTotalAmount(orderData.items, year);
-
+  
   const failoverNode = year === '2025' ? 'node1' : 'node2';
   const emergencyNode = year === '2025' ? 'node2' : 'node1';
 
-  // try to write to PRIMARY (Node 0)
   let connection: Connection | undefined;
   try {
     console.log(`UPDATE [${id}]: Trying Node 0 (Primary)...`);
     connection = await getConnection('central');
     await executeUpdateTransaction(connection, id, orderData, totalAmount);
     await connection.end();
-
+    
     console.log(`UPDATE [${id}]: Success on Node 0. Replicating...`);
-    // we don't wait for this, just fire and forget.
     replicateUpdate(id, orderData, totalAmount);
-
     return id;
 
   } catch (err: any) {
     if (connection) await connection.end();
     console.warn(`UPDATE: Node 0 failed. (${err.message}). Failing over...`);
 
-    // try to write to FAILOVER (Node 1 or 2)
     try {
       console.log(`UPDATE [${id}]: Trying Node ${failoverNode} (Failover)...`);
       connection = await getConnection(failoverNode);
       await executeUpdateTransaction(connection, id, orderData, totalAmount);
-
+      
       await logPendingSync(failoverNode, {
         origin_node: failoverNode,
         delivery_date: deliveryDate,
-        order_data: JSON.stringify(orderData), // log the full data
+        order_data: JSON.stringify(orderData),
       });
-
+      
       await connection.end();
       return `${id} (Updated locally, sync to central pending)`;
 
     } catch (failoverErr: any) {
       if (connection) await connection.end();
       console.warn(`UPDATE [${id}]: Node ${failoverNode} failed. (${failoverErr.message}). Emergency failover...`);
-
-      // try to write to EMERGENCY (Node 2 or 1)
+      
       try {
         console.log(`UPDATE [${id}]: Trying Node ${emergencyNode} (Emergency Log)...`);
         await logEmergencyPendingSync(emergencyNode, {
@@ -194,9 +158,7 @@ export const updateOrder = async (id: string, orderData: OrderFormData): Promise
           delivery_date: deliveryDate,
           order_data: JSON.stringify(orderData),
         });
-
         return `${id} (Update failed over to emergency log on ${emergencyNode})`;
-
       } catch (emergencyErr: any) {
         console.error(`CRITICAL: All 3 nodes are down. Update failed.`);
         throw new Error("All database nodes are unavailable. Update failed.");
@@ -205,45 +167,36 @@ export const updateOrder = async (id: string, orderData: OrderFormData): Promise
   }
 };
 
-
-/**
- * DELETE ORDER
- */
 export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<string> => {
   const failoverNode = year === '2025' ? 'node1' : 'node2';
   const emergencyNode = year === '2025' ? 'node2' : 'node1';
 
-  // try to write to PRIMARY (Node 0)
   let connection: Connection | undefined;
   try {
     console.log(`DELETE [${id}]: Trying Node 0 (Primary)...`);
     connection = await getConnection('central');
     await executeDeleteTransaction(connection, id);
     await connection.end();
-
+    
     console.log(`DELETE [${id}]: Success on Node 0. Replicating...`);
-
     replicateDelete(id, year);
-
     return id;
 
   } catch (err: any) {
     if (connection) await connection.end();
     console.warn(`DELETE: Node 0 failed. (${err.message}). Failing over...`);
 
-    // try to write to FAILOVER (Node 1 or 2)
     try {
       console.log(`DELETE [${id}]: Trying Node ${failoverNode} (Failover)...`);
       connection = await getConnection(failoverNode);
       await executeDeleteTransaction(connection, id);
-
-      // log deletion as a PENDING task
+      
       await logPendingSync(failoverNode, {
         origin_node: failoverNode,
         delivery_date: year.toString(),
         order_data: JSON.stringify({ orderNumber: id, _action: 'DELETE' }),
       });
-
+      
       await connection.end();
       return `${id} (Deleted locally, sync to central pending)`;
 
@@ -251,7 +204,6 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
       if (connection) await connection.end();
       console.warn(`DELETE [${id}]: Node ${failoverNode} failed. (${failoverErr.message}). Emergency failover...`);
 
-      // try to write to EMERGENCY (Node 2 or 1)
       try {
         console.log(`DELETE [${id}]: Trying Node ${emergencyNode} (Emergency Log)...`);
         await logEmergencyPendingSync(emergencyNode, {
@@ -259,9 +211,7 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
           delivery_date: year.toString(),
           order_data: JSON.stringify({ orderNumber: id, _action: 'DELETE' }),
         });
-
         return `${id} (Delete failed over to emergency log on ${emergencyNode})`;
-
       } catch (emergencyErr: any) {
         console.error(`CRITICAL: All 3 nodes are down. Delete failed.`);
         throw new Error("All database nodes are unavailable. Delete failed.");
@@ -273,100 +223,93 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
 
 // --- HELPER FUNCTIONS ---
 
-/**
- * calculate and write/update data.
- * contains all our locking logic.
- */
-// This helper function is no longer needed, as calculateTotalAmount is separate
-// and the execute functions are simple.
-
-/**
- * Helper: Executes the actual SQL INSERTs for a new order.
- */
 export const executeWriteTransaction = async (
   connection: Connection,
-  orderNumber: string,
+  orderNumber: string, 
   orderData: OrderFormData,
-  totalAmount: number
+  totalAmount: number,
+  options: TableOptions = {} 
 ) => {
+  const { 
+    ordersTable = 'Orders', 
+    itemsTable = 'OrderItems', 
+    productsTable = 'Products' 
+  } = options;
+
   try {
-    // concurrency: REPEATABLE READ for all writes
     await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
     await connection.beginTransaction();
 
-    // apply Shared Lock to Products
     const productNumbers = orderData.items.map(item => item.productNumber);
     const placeholders = productNumbers.map(() => '?').join(',');
+    
     await connection.execute(
-      `SELECT 1 FROM Products WHERE id IN (${placeholders}) FOR SHARE`,
+      `SELECT 1 FROM ${productsTable} WHERE id IN (${placeholders}) FOR SHARE`,
       productNumbers
     );
 
-    // insert into Header
     const year = new Date(orderData.deliveryDate).getFullYear() >= 2025 ? '2025' : '2024';
     const hardcodedUser = getUserByYear(year);
     const hardcodedRider = getRiderByYear(year);
+    
     const [orderResult] = await connection.execute(
-      `INSERT INTO Orders (orderNumber, userId, deliveryRiderId, deliveryDate, createdAt, updatedAt)
+      `INSERT INTO ${ordersTable} (orderNumber, userId, deliveryRiderId, deliveryDate, createdAt, updatedAt)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [orderNumber, hardcodedUser.id, hardcodedRider.id, orderData.deliveryDate, new Date(), new Date()]
     );
 
-    // Get the inserted order ID
     const orderId = (orderResult as any).insertId;
 
-    // Insert into Details
     for (const item of orderData.items) {
       await connection.execute(
-        `INSERT INTO OrderItems (OrderId, ProductId, quantity, notes, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO ${itemsTable} (OrderId, ProductId, quantity, notes, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
         [orderId, item.productNumber, item.quantity, null, new Date(), new Date()]
       );
     }
-
-    // All queries succeeded
+    
     await connection.commit();
 
   } catch (err) {
-    // If any query fails, roll back the entire transaction
     await connection.rollback();
-    throw err; // Re-throw the error to be caught by the main function
+    throw err;
   }
 };
 
-/**
- * Helper: Executes the SQL UPDATEs for an existing order.
- */
 export const executeUpdateTransaction = async (
   connection: Connection,
-  orderNumber: string,
+  orderNumber: string, 
   orderData: OrderFormData,
-  totalAmount: number
+  totalAmount: number,
+  options: TableOptions = {}
 ) => {
+  const { 
+    ordersTable = 'Orders', 
+    itemsTable = 'OrderItems', 
+    productsTable = 'Products' 
+  } = options;
+
   try {
     await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
     await connection.beginTransaction();
 
-    // apply Shared Lock to Products
     const productNumbers = orderData.items.map(item => item.productNumber);
     const placeholders = productNumbers.map(() => '?').join(',');
     await connection.execute(
-      `SELECT 1 FROM Products WHERE id IN (${placeholders}) FOR SHARE`,
+      `SELECT 1 FROM ${productsTable} WHERE id IN (${placeholders}) FOR SHARE`,
       productNumbers
     );
-
-    // apply Exclusive Lock to Header (Deadlock Prevention)
+    
     const [rows] = await connection.execute(
-      `SELECT 1 FROM Orders WHERE orderNumber = ? FOR UPDATE`, // exclusive lock
+      `SELECT 1 FROM ${ordersTable} WHERE orderNumber = ? FOR UPDATE`,
       [orderNumber]
     );
     if ((rows as any[]).length === 0) throw new Error(`Order ${orderNumber} not found.`);
 
-    // perform all writes
     const year = new Date(orderData.deliveryDate).getFullYear() >= 2025 ? '2025' : '2024';
     const hardcodedUser = getUserByYear(year);
     const hardcodedRider = getRiderByYear(year);
     await connection.execute(
-      `UPDATE Orders SET
+      `UPDATE ${ordersTable} SET
          userId = ?,
          deliveryRiderId = ?,
          deliveryDate = ?,
@@ -375,23 +318,20 @@ export const executeUpdateTransaction = async (
       [hardcodedUser.id, hardcodedRider.id, orderData.deliveryDate, new Date(), orderNumber]
     );
 
-    // Get the order ID for foreign key reference
     const [orderRows] = await connection.execute(
-      `SELECT id FROM Orders WHERE orderNumber = ?`,
+      `SELECT id FROM ${ordersTable} WHERE orderNumber = ?`,
       [orderNumber]
     );
     const orderId = (orderRows as any[])[0]?.id;
 
-    // delete old details
     await connection.execute(
-      `DELETE FROM OrderItems WHERE OrderId = ?`,
+      `DELETE FROM ${itemsTable} WHERE OrderId = ?`,
       [orderId]
     );
-
-    // insert new details
+    
     for (const item of orderData.items) {
       await connection.execute(
-        `INSERT INTO OrderItems (OrderId, ProductId, quantity, notes, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO ${itemsTable} (OrderId, ProductId, quantity, notes, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
         [orderId, item.productNumber, item.quantity, null, new Date(), new Date()]
       );
     }
@@ -403,50 +343,41 @@ export const executeUpdateTransaction = async (
   }
 };
 
-
-/**
- * Helper: Executes the SQL DELETEs for an order.
- * implements consistent lock order for deadlock prevention.
- */
 export const executeDeleteTransaction = async (
   connection: Connection,
-  orderNumber: string
+  orderNumber: string,
+  options: TableOptions = {}
 ) => {
+  const { ordersTable = 'Orders', itemsTable = 'OrderItems' } = options;
+
   try {
     await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
     await connection.beginTransaction();
-
-    // DEADLOCK PREVENTION
-    // lock the ORDER_HEADER row FIRST, before touching ORDER_DETAILS
-    // ensures a consistent lock order (Header -> Details)
-    // with our executeUpdateTransaction function.
+    
     const [rows] = await connection.execute(
-      `SELECT 1 FROM Orders WHERE orderNumber = ? FOR UPDATE`, // exclusive lock
+      `SELECT 1 FROM ${ordersTable} WHERE orderNumber = ? FOR UPDATE`,
       [orderNumber]
     );
 
-    // if the row doesn't exist, we can just commit (nothing to delete)
     if ((rows as any[]).length === 0) {
       await connection.commit();
       return;
     }
 
-    // Get the order ID for foreign key reference
     const [orderRows] = await connection.execute(
-      `SELECT id FROM Orders WHERE orderNumber = ?`,
+      `SELECT id FROM ${ordersTable} WHERE orderNumber = ?`,
       [orderNumber]
     );
     const orderId = (orderRows as any[])[0]?.id;
 
-    // must delete from details first due to foreign key constraints
     if (orderId) {
       await connection.execute(
-        `DELETE FROM OrderItems WHERE OrderId = ?`,
+        `DELETE FROM ${itemsTable} WHERE OrderId = ?`,
         [orderId]
       );
     }
     await connection.execute(
-      `DELETE FROM Orders WHERE orderNumber = ?`,
+      `DELETE FROM ${ordersTable} WHERE orderNumber = ?`,
       [orderNumber]
     );
 
@@ -458,9 +389,6 @@ export const executeDeleteTransaction = async (
 };
 
 
-/**
- * Helper: Replicates a successful Node 0 CREATE/UPDATE to the replicas.
- */
 const replicateWrite = async (
   orderNumber: string,
   orderData: OrderFormData,
@@ -468,26 +396,25 @@ const replicateWrite = async (
   year: '2024' | '2025',
   mode: 'CREATE' | 'UPDATE' = 'CREATE'
 ) => {
-
-  // determine which replica to write to (Node 1 or 2)
+  
+  // REPLICATE TO TARGET NODE (Primary Table)
   const targetNode = year === '2025' ? 'node1' : 'node2';
   const queryText = mode === 'CREATE' ? 'REPLICATE_CREATE_ORDER' : 'REPLICATE_UPDATE_ORDER';
-
+  
   let connection: Connection | undefined;
   try {
-    // try to connect and write to the replica
     console.log(`REPLICATE (${mode}): Trying to copy to Node ${targetNode}...`);
     connection = await getConnection(targetNode);
+    // Uses default tables (Orders, OrderItems) on the target node
     if (mode === 'CREATE') {
       await executeWriteTransaction(connection, orderNumber, orderData, totalAmount);
     } else {
       await executeUpdateTransaction(connection, orderNumber, orderData, totalAmount);
     }
     console.log(`REPLICATE (${mode}): Success on Node ${targetNode}.`);
-
+    
   } catch (err: any) {
     console.warn(`REPLICATE (${mode}): Failed to copy to Node ${targetNode}. Logging failure...`);
-    // log the failure on Node 0
     await logReplicationFailure({
       target_node: targetNode,
       query_text: queryText,
@@ -497,16 +424,20 @@ const replicateWrite = async (
     if (connection) await connection.end();
   }
 
-  // replicate to the other node (the backup replica)
+  // REPLICATE TO BACKUP NODE (Backup Tables)
   const backupNode = year === '2025' ? 'node2' : 'node1';
+  const backupOptions: TableOptions = year === '2025' 
+    ? { ordersTable: 'Orders_2025Backup', itemsTable: 'OrderItems_2025Backup', productsTable: 'Products_2025Backup' }
+    : { ordersTable: 'Orders_2024Backup', itemsTable: 'OrderItems_2024Backup', productsTable: 'Products_2024Backup' };
+
   let backupConnection: Connection | undefined;
   try {
-    console.log(`REPLICATE (${mode}): Trying to copy to Node ${backupNode} (Backup)...`);
+    console.log(`REPLICATE (${mode}): Trying to copy to Node ${backupNode} (Backup Tables)...`);
     backupConnection = await getConnection(backupNode);
     if (mode === 'CREATE') {
-      await executeWriteTransaction(backupConnection, orderNumber, orderData, totalAmount);
+      await executeWriteTransaction(backupConnection, orderNumber, orderData, totalAmount, backupOptions);
     } else {
-      await executeUpdateTransaction(backupConnection, orderNumber, orderData, totalAmount);
+      await executeUpdateTransaction(backupConnection, orderNumber, orderData, totalAmount, backupOptions);
     }
     console.log(`REPLICATE (${mode}): Success on Node ${backupNode}.`);
 
@@ -522,9 +453,6 @@ const replicateWrite = async (
   }
 };
 
-/**
- * Helper: Replicates a successful Node 0 UPDATE to the replicas.
- */
 const replicateUpdate = async (
   orderNumber: string,
   orderData: OrderFormData,
@@ -535,14 +463,11 @@ const replicateUpdate = async (
   replicateWrite(orderNumber, orderData, totalAmount, year, 'UPDATE');
 };
 
-/**
- * Helper: Replicates a successful Node 0 DELETE to the replicas.
- */
 const replicateDelete = async (orderNumber: string, year: '2024' | '2025') => {
   const targetNode = year === '2025' ? 'node1' : 'node2';
   const backupNode = year === '2025' ? 'node2' : 'node1';
 
-  // replicate to target node
+  // Replicate to target (Primary Tables)
   let connection: Connection | undefined;
   try {
     console.log(`REPLICATE (DELETE): Trying to copy to Node ${targetNode}...`);
@@ -559,12 +484,17 @@ const replicateDelete = async (orderNumber: string, year: '2024' | '2025') => {
     if (connection) await connection.end();
   }
 
-  // replicate to backup node
+  // Replicate to backup (Backup Tables)
   let backupConnection: Connection | undefined;
   try {
-    console.log(`REPLICATE (DELETE): Trying to copy to Node ${backupNode}...`);
+    console.log(`REPLICATE (DELETE): Trying to copy to Node ${backupNode} (Backup Tables)...`);
     backupConnection = await getConnection(backupNode);
-    await executeDeleteTransaction(backupConnection, orderNumber);
+    
+    const backupOptions = year === '2025'
+      ? { ordersTable: 'Orders_2025Backup', itemsTable: 'OrderItems_2025Backup' }
+      : { ordersTable: 'Orders_2024Backup', itemsTable: 'OrderItems_2024Backup' };
+
+    await executeDeleteTransaction(backupConnection, orderNumber, backupOptions);
   } catch (err: any) {
     console.warn(`REPLICATE (DELETE): Failed to copy to Node ${backupNode}. Logging failure...`);
     await logReplicationFailure({
