@@ -176,9 +176,6 @@ export default function OrderList() {
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold text-slate-800">Orders</h2>
             <div className="relative">
-              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
-
-              </div>
             </div>
           </div>
         </div>
