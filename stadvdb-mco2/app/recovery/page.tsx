@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { RefreshCw, CheckCircle2, AlertCircle, XCircle, Server, Clock } from 'lucide-react';
+import { RefreshCw, CheckCircle2, AlertCircle, XCircle, Server, Clock, Settings, Activity } from 'lucide-react';
 
 type NodeStatus = 'online' | 'offline' | 'degraded';
 
@@ -23,9 +23,34 @@ interface RecoveryLog {
   details?: string;
 }
 
+interface AutomationStatus {
+  isRunning: boolean;
+  config: {
+    monitoringInterval: number;
+    healthCheckTimeout: number;
+    enabled: boolean;
+  };
+  nodeHealth: {
+    [key: string]: {
+      isOnline: boolean;
+      lastChecked: string;
+      lastStatusChange: string;
+      consecutiveFailures: number;
+    };
+  };
+  stats: {
+    totalRuns: number;
+    successfulRuns: number;
+    failedRuns: number;
+    lastRunTime: string | null;
+    lastRunResult: any;
+  };
+}
+
 export default function RecoveryPage() {
   const [logs, setLogs] = useState<RecoveryLog[]>([]);
   const [nodeStatuses, setNodeStatuses] = useState<Record<string, NodeInfo>>({});
+  const [automationStatus, setAutomationStatus] = useState<AutomationStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<string>('');
 
@@ -54,9 +79,22 @@ export default function RecoveryPage() {
     }
   };
 
+  const fetchAutomationStatus = async () => {
+    try {
+      const response = await fetch('/api/recovery/auto');
+      const result = await response.json();
+      if (result.success) {
+        setAutomationStatus(result.data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch automation status:', error);
+      setAutomationStatus(null);
+    }
+  };
+
   const refreshData = async () => {
     setIsLoading(true);
-    await Promise.all([fetchNodeStatus(), fetchRecoveryLogs()]);
+    await Promise.all([fetchNodeStatus(), fetchRecoveryLogs(), fetchAutomationStatus()]);
     setLastRefresh(new Date().toLocaleString());
     setIsLoading(false);
   };
@@ -157,6 +195,74 @@ export default function RecoveryPage() {
         ))}
       </div>
 
+      {/* Automation Status */}
+      <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Activity className="h-5 w-5 text-purple-600" />
+            <h2 className="text-lg font-semibold text-gray-800">Automation Status</h2>
+          </div>
+          {automationStatus?.isRunning ? (
+            <div className="flex items-center gap-2 text-green-600">
+              <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+              <span className="text-sm font-medium">Active</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-gray-500">
+              <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
+              <span className="text-sm font-medium">Inactive</span>
+            </div>
+          )}
+        </div>
+
+        {automationStatus ? (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-gray-50 rounded p-3">
+                <p className="text-xs text-gray-600 font-medium">Monitor Interval</p>
+                <p className="text-sm text-gray-800">{(automationStatus.config.monitoringInterval / 1000)}s</p>
+              </div>
+              <div className="bg-gray-50 rounded p-3">
+                <p className="text-xs text-gray-600 font-medium">Health Timeout</p>
+                <p className="text-sm text-gray-800">{(automationStatus.config.healthCheckTimeout / 1000)}s</p>
+              </div>
+            </div>
+
+            <div className="border-t pt-3">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-sm font-medium text-gray-700">Recovery Statistics</span>
+                <span className="text-xs text-gray-500">
+                  {automationStatus.stats.lastRunTime
+                    ? `Last run: ${new Date(automationStatus.stats.lastRunTime).toLocaleTimeString()}`
+                    : 'No runs yet'
+                  }
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="bg-blue-50 rounded p-2">
+                  <p className="text-lg font-bold text-blue-600">{automationStatus.stats.totalRuns}</p>
+                  <p className="text-xs text-blue-600">Total</p>
+                </div>
+                <div className="bg-green-50 rounded p-2">
+                  <p className="text-lg font-bold text-green-600">{automationStatus.stats.successfulRuns}</p>
+                  <p className="text-xs text-green-600">Success</p>
+                </div>
+                <div className="bg-red-50 rounded p-2">
+                  <p className="text-lg font-bold text-red-600">{automationStatus.stats.failedRuns}</p>
+                  <p className="text-xs text-red-600">Failed</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="text-center py-4">
+            <Settings className="h-8 w-8 text-gray-400 mx-auto mb-2" />
+            <p className="text-sm text-gray-600">Automation status unavailable</p>
+            <p className="text-xs text-gray-500">Check if the recovery service is running</p>
+          </div>
+        )}
+      </div>
+
       {/* Recovery Information */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-white rounded-xl shadow-md border border-gray-200 p-6">
@@ -172,10 +278,10 @@ export default function RecoveryPage() {
               <span className="font-semibold">Process:</span> Reads PENDING_SYNC logs from replicas
             </p>
             <p className="text-xs text-blue-800 mt-1">
-              <span className="font-semibold">Trigger:</span> Automated central node recovery detection
+              <span className="font-semibold">Trigger:</span> {automationStatus?.isRunning ? 'Automated every 30 seconds' : 'Manual via API'}
             </p>
             <p className="text-xs text-blue-800 mt-1">
-              <span className="font-semibold">Execution:</span> Background monitoring calls /api/recovery/sync automatically
+              <span className="font-semibold">Execution:</span> {automationStatus?.isRunning ? 'Background service running' : 'Background monitoring calls /api/recovery/sync automatically'}
             </p>
           </div>
         </div>
@@ -193,10 +299,10 @@ export default function RecoveryPage() {
               <span className="font-semibold">Process:</span> Reads REPLICATION_LOG for failed operations
             </p>
             <p className="text-xs text-green-800 mt-1">
-              <span className="font-semibold">Trigger:</span> Automated replica node recovery detection
+              <span className="font-semibold">Trigger:</span> {automationStatus?.isRunning ? 'Automated every 30 seconds' : 'Manual via API'}
             </p>
             <p className="text-xs text-green-800 mt-1">
-              <span className="font-semibold">Execution:</span> Background monitoring calls /api/recovery/replicate automatically
+              <span className="font-semibold">Execution:</span> {automationStatus?.isRunning ? 'Background service running' : 'Background monitoring calls /api/recovery/replicate automatically'}
             </p>
           </div>
         </div>
