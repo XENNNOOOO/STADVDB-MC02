@@ -65,7 +65,6 @@ const readPendingSyncLog = async (node: 'node1' | 'node2'): Promise<PendingSyncL
   try {
     console.log(`RECOVERY: Reading PENDING_SYNC_LOG from ${node}...`);
     connection = await getConnection(node);
-    // Fixed Table Name: PENDING_SYNC -> PENDING_SYNC_LOG
     const [rows] = await connection.execute('SELECT * FROM PENDING_SYNC_LOG');
     await connection.end();
     return rows as PendingSyncLog[];
@@ -105,7 +104,6 @@ export const runPendingSync = async () => {
     // fetch all product prices first to calculate totals
     let productPriceMap = new Map<string, number>();
     try {
-      // Fixed: getAllProducts handles its own connection now
       const products: Product[] = await getAllProducts();
       products.forEach(p => {
         productPriceMap.set(p.PRODUCT_NUMBER, p.UNIT_PRICE);
