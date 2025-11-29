@@ -176,15 +176,6 @@ export default function OrderList() {
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold text-slate-800">Orders</h2>
             <div className="relative">
-              <select
-                value={filter}
-                onChange={(e) => handleFilterChange(e.target.value as YearFilterType)}
-                className="appearance-none pl-4 pr-10 py-2.5 text-sm font-semibold border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white text-slate-700 cursor-pointer hover:bg-slate-50 transition-colors"
-              >
-                <option value="all">All Years (Central)</option>
-                <option value="2025">2025 (Node 1)</option>
-                <option value="2024">2024 (Node 2)</option>
-              </select>
               <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
                 <svg className="h-5 w-5 text-slate-500" viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
