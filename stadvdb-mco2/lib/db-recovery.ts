@@ -24,7 +24,6 @@ interface ReplicationLog {
 
 /**
  * WRAPPER FOR API COMPATIBILITY
- * This ensures your existing /api/recovery route still works
  */
 export const runRecovery = async () => {
   const results = {
