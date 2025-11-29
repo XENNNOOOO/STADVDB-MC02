@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { Pencil, Trash2, Eye, X, Plus, ChevronDown } from 'lucide-react';
 import QuickActions from './QuickActions';
 
@@ -41,9 +42,10 @@ interface APIResponse<T> {
 }
 
 type YearFilterType = 'all' | '2024' | '2025';
-type ModalMode = 'view' | 'edit' | 'create' | 'delete' | null;
+type ModalMode = 'view' | 'create' | 'delete' | null;
 
 export default function OrderList() {
+  const router = useRouter();
   const [filter, setFilter] = useState<YearFilterType>('all');
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [modalMode, setModalMode] = useState<ModalMode>(null);
@@ -174,15 +176,6 @@ export default function OrderList() {
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold text-slate-800">Orders</h2>
             <div className="relative">
-              <select
-                value={filter}
-                onChange={(e) => handleFilterChange(e.target.value as YearFilterType)}
-                className="appearance-none pl-4 pr-10 py-2.5 text-sm font-semibold border-2 border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white text-slate-700 cursor-pointer hover:bg-slate-50 transition-colors"
-              >
-                <option value="all">All Years (Central)</option>
-                <option value="2025">2025 (Node 1)</option>
-                <option value="2024">2024 (Node 2)</option>
-              </select>
               <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3">
                 <svg className="h-5 w-5 text-slate-500" viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
@@ -264,7 +257,7 @@ export default function OrderList() {
                         <Eye size={16} />
                       </button>
                       <button
-                        onClick={() => openModal('edit', order)}
+                        onClick={() => router.push(`/orders/${order.ORDER_NUMBER}/edit`)}
                         className="p-2 text-slate-600 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
                         title="Edit Order"
                       >
@@ -384,7 +377,7 @@ export default function OrderList() {
           onClose={closeModal}
           onEdit={() => {
             if (selectedOrder) {
-              setModalMode('edit');
+              router.push(`/orders/${selectedOrder.ORDER_NUMBER}/edit`);
             }
           }}
           onDelete={() => {
@@ -400,7 +393,7 @@ export default function OrderList() {
 }
 
 interface OrderModalProps {
-  mode: 'view' | 'edit' | 'create' | 'delete';
+  mode: 'view' | 'create' | 'delete';
   order: Order | null;
   onClose: () => void;
   onEdit?: () => void;
@@ -446,8 +439,8 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
         }))
       };
 
-      const url = mode === 'create' ? '/api/orders' : `/api/orders/${order?.ORDER_NUMBER}`;
-      const method = mode === 'create' ? 'POST' : 'PUT';
+      const url = '/api/orders';
+      const method = 'POST';
 
       const response = await fetch(url, {
         method,
@@ -727,7 +720,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
     );
   }
 
-  // Create/Edit Mode
+  // Create Mode
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto scrollbar-hide">
       <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full my-8 max-h-[90vh] overflow-y-auto scrollbar-hide">
@@ -735,12 +728,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
         <div className="px-8 pt-8 pb-6 border-b-2 border-slate-200">
           <div className="flex justify-between items-start">
             <div>
-              <h3 className="text-2xl font-bold text-slate-900 mb-1">
-                {mode === 'create' ? 'Create New Order' : 'Edit Order'}
-              </h3>
-              {mode === 'edit' && (
-                <p className="text-slate-500 text-sm font-medium">{order?.ORDER_NUMBER}</p>
-              )}
+              <h3 className="text-2xl font-bold text-slate-900 mb-1">Create New Order</h3>
             </div>
             <button
               onClick={onClose}
@@ -874,7 +862,7 @@ function OrderModal({ mode, order, onClose, onEdit, onDelete, products }: OrderM
               type="submit"
               className="flex-1 px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all font-semibold"
             >
-              {mode === 'create' ? 'Create Order' : 'Update Order'}
+              Create Order
             </button>
           </div>
         </form>
