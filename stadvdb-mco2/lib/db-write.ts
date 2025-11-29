@@ -5,6 +5,16 @@ import { getProducts } from './db-read';
 import type { Connection } from 'mysql2/promise';
 import type { OrderFormData, Product } from './types';
 
+// Import for post-write recovery checks
+let forceRecoveryCheck: (() => Promise<any>) | undefined;
+try {
+  const recoveryAutomation = require('./recovery-automation');
+  forceRecoveryCheck = recoveryAutomation.forceRecoveryCheck;
+} catch (err) {
+  // Recovery automation not available - continue without auto-recovery
+  console.warn('WRITE: Recovery automation not available, proceeding without auto-recovery checks');
+}
+
 interface TableOptions {
   ordersTable?: string;
   itemsTable?: string;
@@ -38,6 +48,29 @@ const calculateTotalAmount = async (
   }
 };
 
+/**
+ * Trigger post-write recovery check if available
+ * This helps ensure pending operations are processed immediately after writes
+ */
+const triggerPostWriteRecovery = async (operationType: string, orderNumber: string): Promise<void> => {
+  if (!forceRecoveryCheck) {
+    return; // Recovery automation not available
+  }
+
+  try {
+    console.log(`WRITE: Triggering post-write recovery check for ${operationType} operation on order ${orderNumber}`);
+    const recoveryResult = await forceRecoveryCheck();
+
+    if (recoveryResult && (recoveryResult.masterToSlaves > 0 || recoveryResult.slavesToMaster > 0)) {
+      const totalOperations = recoveryResult.masterToSlaves + recoveryResult.slavesToMaster;
+      console.log(`WRITE: Post-write recovery completed - ${totalOperations} pending operations processed`);
+    }
+  } catch (error: any) {
+    // Don't fail the write operation if recovery check fails
+    console.warn(`WRITE: Post-write recovery check failed (non-critical): ${error.message}`);
+  }
+};
+
 
 export const createOrder = async (orderData: OrderFormData): Promise<string> => {
   const { deliveryDate } = orderData;
@@ -64,6 +97,9 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
     console.log(`WRITE [${orderNumber}]: Success on Node 0. Replicating...`);
     replicateWrite(orderNumber, orderData, totalAmount, year);
 
+    // Trigger post-write recovery check to process any pending operations
+    await triggerPostWriteRecovery('CREATE', orderNumber);
+
     return orderNumber;
 
   } catch (err: any) {
@@ -85,6 +121,10 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
       });
 
       await connection.end();
+
+      // Trigger recovery check after failover to potentially sync immediately
+      await triggerPostWriteRecovery('CREATE_FAILOVER', orderNumber);
+
       return `${orderNumber} (Saved locally, sync to central pending)`;
 
     } catch (failoverErr: any) {
@@ -127,6 +167,10 @@ export const updateOrder = async (id: string, orderData: OrderFormData): Promise
     
     console.log(`UPDATE [${id}]: Success on Node 0. Replicating...`);
     replicateUpdate(id, orderData, totalAmount);
+
+    // Trigger post-write recovery check to process any pending operations
+    await triggerPostWriteRecovery('UPDATE', id);
+
     return id;
 
   } catch (err: any) {
@@ -145,6 +189,10 @@ export const updateOrder = async (id: string, orderData: OrderFormData): Promise
       });
       
       await connection.end();
+
+      // Trigger recovery check after failover to potentially sync immediately
+      await triggerPostWriteRecovery('UPDATE_FAILOVER', id);
+
       return `${id} (Updated locally, sync to central pending)`;
 
     } catch (failoverErr: any) {
@@ -180,6 +228,10 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
     
     console.log(`DELETE [${id}]: Success on Node 0. Replicating...`);
     replicateDelete(id, year);
+
+    // Trigger post-write recovery check to process any pending operations
+    await triggerPostWriteRecovery('DELETE', id);
+
     return id;
 
   } catch (err: any) {
@@ -198,6 +250,10 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
       });
       
       await connection.end();
+
+      // Trigger recovery check after failover to potentially sync immediately
+      await triggerPostWriteRecovery('DELETE_FAILOVER', id);
+
       return `${id} (Deleted locally, sync to central pending)`;
 
     } catch (failoverErr: any) {
