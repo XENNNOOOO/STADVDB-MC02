@@ -259,7 +259,7 @@ class RecoveryAutomation {
 
         try {
           const connection = await getConnection(node);
-          const [rows] = await connection.execute('SELECT COUNT(*) as count FROM PENDING_SYNC');
+          const [rows] = await connection.execute('SELECT COUNT(*) as count FROM PENDING_SYNC_LOG');
           await connection.end();
 
           const count = (rows as any)[0].count;
