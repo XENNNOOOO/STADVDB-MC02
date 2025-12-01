@@ -5,14 +5,11 @@ import { getProducts } from './db-read';
 import type { Connection } from 'mysql2/promise';
 import type { OrderFormData, Product } from './types';
 
-// Import for post-write recovery checks
 let forceRecoveryCheck: (() => Promise<any>) | undefined;
 try {
   const recoveryAutomation = require('./recovery-automation');
   forceRecoveryCheck = recoveryAutomation.forceRecoveryCheck;
 } catch (err) {
-  // Recovery automation not available - continue without auto-recovery
-  console.warn('WRITE: Recovery automation not available, proceeding without auto-recovery checks');
 }
 
 interface TableOptions {
@@ -43,31 +40,18 @@ const calculateTotalAmount = async (
     return total;
 
   } catch (err: any) {
-    console.error("FATAL: Could not calculate total amount.", err.message);
     throw new Error(`Could not calculate total: ${err.message}`);
   }
 };
 
-/**
- * Trigger post-write recovery check if available
- * This helps ensure pending operations are processed immediately after writes
- */
 const triggerPostWriteRecovery = async (operationType: string, orderNumber: string): Promise<void> => {
   if (!forceRecoveryCheck) {
-    return; // Recovery automation not available
+    return;
   }
 
   try {
-    console.log(`WRITE: Triggering post-write recovery check for ${operationType} operation on order ${orderNumber}`);
     const recoveryResult = await forceRecoveryCheck();
-
-    if (recoveryResult && (recoveryResult.masterToSlaves > 0 || recoveryResult.slavesToMaster > 0)) {
-      const totalOperations = recoveryResult.masterToSlaves + recoveryResult.slavesToMaster;
-      console.log(`WRITE: Post-write recovery completed - ${totalOperations} pending operations processed`);
-    }
   } catch (error: any) {
-    // Don't fail the write operation if recovery check fails
-    console.warn(`WRITE: Post-write recovery check failed (non-critical): ${error.message}`);
   }
 };
 
@@ -86,32 +70,24 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
 
   let connection: Connection | undefined;
   try {
-    console.log(`WRITE [${orderNumber}]: Trying Node 0 (Primary)...`);
     connection = await getConnection('central');
 
-    // Write to Node 0 (Standard tables)
     await executeWriteTransaction(connection, orderNumber, orderData, totalAmount);
 
     await connection.end();
 
-    console.log(`WRITE [${orderNumber}]: Success on Node 0. Replicating...`);
     replicateWrite(orderNumber, orderData, totalAmount, year);
 
-    // Trigger post-write recovery check to process any pending operations
     await triggerPostWriteRecovery('CREATE', orderNumber);
 
     return orderNumber;
 
   } catch (err: any) {
     if (connection) await connection.end();
-    console.warn(`WRITE: Node 0 failed. (${err.message}). Failing over...`);
 
-    // FAILOVER (Node 1 or 2)
     try {
-      console.log(`WRITE [${orderNumber}]: Trying Node ${failoverNode} (Failover)...`);
       connection = await getConnection(failoverNode);
       
-      // On local node, use standard tables
       await executeWriteTransaction(connection, orderNumber, orderData, totalAmount);
       
       await logPendingSync(failoverNode, {
@@ -122,18 +98,14 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
 
       await connection.end();
 
-      // Trigger recovery check after failover to potentially sync immediately
       await triggerPostWriteRecovery('CREATE_FAILOVER', orderNumber);
 
       return `${orderNumber} (Saved locally, sync to central pending)`;
 
     } catch (failoverErr: any) {
       if (connection) await connection.end();
-      console.warn(`WRITE [${orderNumber}]: Node ${failoverNode} failed. (${failoverErr.message}). Emergency failover...`);
       
-      // EMERGENCY (Writes to Log only)
       try {
-        console.log(`WRITE [${orderNumber}]: Trying Node ${emergencyNode} (Emergency Log)...`);
         await logEmergencyPendingSync(emergencyNode, {
           origin_node: failoverNode,
           delivery_date: deliveryDate,
@@ -143,7 +115,6 @@ export const createOrder = async (orderData: OrderFormData): Promise<string> => 
         return `${orderNumber} (Write failed over to emergency log on ${emergencyNode})`;
       
       } catch (emergencyErr: any) {
-        console.error(`CRITICAL: All 3 nodes are down. Write failed.`);
         throw new Error("All database nodes are unavailable. Write failed.");
       }
     }
@@ -160,25 +131,20 @@ export const updateOrder = async (id: string, orderData: OrderFormData): Promise
 
   let connection: Connection | undefined;
   try {
-    console.log(`UPDATE [${id}]: Trying Node 0 (Primary)...`);
     connection = await getConnection('central');
     await executeUpdateTransaction(connection, id, orderData, totalAmount);
     await connection.end();
     
-    console.log(`UPDATE [${id}]: Success on Node 0. Replicating...`);
     replicateUpdate(id, orderData, totalAmount);
 
-    // Trigger post-write recovery check to process any pending operations
     await triggerPostWriteRecovery('UPDATE', id);
 
     return id;
 
   } catch (err: any) {
     if (connection) await connection.end();
-    console.warn(`UPDATE: Node 0 failed. (${err.message}). Failing over...`);
 
     try {
-      console.log(`UPDATE [${id}]: Trying Node ${failoverNode} (Failover)...`);
       connection = await getConnection(failoverNode);
       await executeUpdateTransaction(connection, id, orderData, totalAmount);
       
@@ -190,17 +156,14 @@ export const updateOrder = async (id: string, orderData: OrderFormData): Promise
       
       await connection.end();
 
-      // Trigger recovery check after failover to potentially sync immediately
       await triggerPostWriteRecovery('UPDATE_FAILOVER', id);
 
       return `${id} (Updated locally, sync to central pending)`;
 
     } catch (failoverErr: any) {
       if (connection) await connection.end();
-      console.warn(`UPDATE [${id}]: Node ${failoverNode} failed. (${failoverErr.message}). Emergency failover...`);
       
       try {
-        console.log(`UPDATE [${id}]: Trying Node ${emergencyNode} (Emergency Log)...`);
         await logEmergencyPendingSync(emergencyNode, {
           origin_node: failoverNode,
           delivery_date: deliveryDate,
@@ -208,7 +171,6 @@ export const updateOrder = async (id: string, orderData: OrderFormData): Promise
         });
         return `${id} (Update failed over to emergency log on ${emergencyNode})`;
       } catch (emergencyErr: any) {
-        console.error(`CRITICAL: All 3 nodes are down. Update failed.`);
         throw new Error("All database nodes are unavailable. Update failed.");
       }
     }
@@ -221,25 +183,20 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
 
   let connection: Connection | undefined;
   try {
-    console.log(`DELETE [${id}]: Trying Node 0 (Primary)...`);
     connection = await getConnection('central');
     await executeDeleteTransaction(connection, id);
     await connection.end();
     
-    console.log(`DELETE [${id}]: Success on Node 0. Replicating...`);
     replicateDelete(id, year);
 
-    // Trigger post-write recovery check to process any pending operations
     await triggerPostWriteRecovery('DELETE', id);
 
     return id;
 
   } catch (err: any) {
     if (connection) await connection.end();
-    console.warn(`DELETE: Node 0 failed. (${err.message}). Failing over...`);
 
     try {
-      console.log(`DELETE [${id}]: Trying Node ${failoverNode} (Failover)...`);
       connection = await getConnection(failoverNode);
       await executeDeleteTransaction(connection, id);
       
@@ -251,17 +208,14 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
       
       await connection.end();
 
-      // Trigger recovery check after failover to potentially sync immediately
       await triggerPostWriteRecovery('DELETE_FAILOVER', id);
 
       return `${id} (Deleted locally, sync to central pending)`;
 
     } catch (failoverErr: any) {
       if (connection) await connection.end();
-      console.warn(`DELETE [${id}]: Node ${failoverNode} failed. (${failoverErr.message}). Emergency failover...`);
 
       try {
-        console.log(`DELETE [${id}]: Trying Node ${emergencyNode} (Emergency Log)...`);
         await logEmergencyPendingSync(emergencyNode, {
           origin_node: failoverNode,
           delivery_date: year.toString(),
@@ -269,15 +223,11 @@ export const deleteOrder = async (id: string, year: '2024' | '2025'): Promise<st
         });
         return `${id} (Delete failed over to emergency log on ${emergencyNode})`;
       } catch (emergencyErr: any) {
-        console.error(`CRITICAL: All 3 nodes are down. Delete failed.`);
         throw new Error("All database nodes are unavailable. Delete failed.");
       }
     }
   }
 };
-
-
-// --- HELPER FUNCTIONS ---
 
 export const executeWriteTransaction = async (
   connection: Connection,
@@ -453,24 +403,19 @@ const replicateWrite = async (
   mode: 'CREATE' | 'UPDATE' = 'CREATE'
 ) => {
   
-  // REPLICATE TO TARGET NODE (Primary Table)
   const targetNode = year === '2025' ? 'node1' : 'node2';
   const queryText = mode === 'CREATE' ? 'REPLICATE_CREATE_ORDER' : 'REPLICATE_UPDATE_ORDER';
   
   let connection: Connection | undefined;
   try {
-    console.log(`REPLICATE (${mode}): Trying to copy to Node ${targetNode}...`);
     connection = await getConnection(targetNode);
-    // Uses default tables (Orders, OrderItems) on the target node
     if (mode === 'CREATE') {
       await executeWriteTransaction(connection, orderNumber, orderData, totalAmount);
     } else {
       await executeUpdateTransaction(connection, orderNumber, orderData, totalAmount);
     }
-    console.log(`REPLICATE (${mode}): Success on Node ${targetNode}.`);
     
   } catch (err: any) {
-    console.warn(`REPLICATE (${mode}): Failed to copy to Node ${targetNode}. Logging failure...`);
     await logReplicationFailure({
       target_node: targetNode,
       query_text: queryText,
@@ -480,7 +425,6 @@ const replicateWrite = async (
     if (connection) await connection.end();
   }
 
-  // REPLICATE TO BACKUP NODE (Backup Tables)
   const backupNode = year === '2025' ? 'node2' : 'node1';
   const backupOptions: TableOptions = year === '2025' 
     ? { ordersTable: 'Orders_2025Backup', itemsTable: 'OrderItems_2025Backup', productsTable: 'Products_2025Backup' }
@@ -488,17 +432,14 @@ const replicateWrite = async (
 
   let backupConnection: Connection | undefined;
   try {
-    console.log(`REPLICATE (${mode}): Trying to copy to Node ${backupNode} (Backup Tables)...`);
     backupConnection = await getConnection(backupNode);
     if (mode === 'CREATE') {
       await executeWriteTransaction(backupConnection, orderNumber, orderData, totalAmount, backupOptions);
     } else {
       await executeUpdateTransaction(backupConnection, orderNumber, orderData, totalAmount, backupOptions);
     }
-    console.log(`REPLICATE (${mode}): Success on Node ${backupNode}.`);
 
   } catch (err: any) {
-    console.warn(`REPLICATE (${mode}): Failed to copy to Node ${backupNode} (Backup). Logging failure...`);
     await logReplicationFailure({
       target_node: backupNode,
       query_text: queryText,
@@ -523,14 +464,11 @@ const replicateDelete = async (orderNumber: string, year: '2024' | '2025') => {
   const targetNode = year === '2025' ? 'node1' : 'node2';
   const backupNode = year === '2025' ? 'node2' : 'node1';
 
-  // Replicate to target (Primary Tables)
   let connection: Connection | undefined;
   try {
-    console.log(`REPLICATE (DELETE): Trying to copy to Node ${targetNode}...`);
     connection = await getConnection(targetNode);
     await executeDeleteTransaction(connection, orderNumber);
   } catch (err: any) {
-    console.warn(`REPLICATE (DELETE): Failed to copy to Node ${targetNode}. Logging failure...`);
     await logReplicationFailure({
       target_node: targetNode,
       query_text: 'REPLICATE_DELETE_ORDER',
@@ -540,10 +478,8 @@ const replicateDelete = async (orderNumber: string, year: '2024' | '2025') => {
     if (connection) await connection.end();
   }
 
-  // Replicate to backup (Backup Tables)
   let backupConnection: Connection | undefined;
   try {
-    console.log(`REPLICATE (DELETE): Trying to copy to Node ${backupNode} (Backup Tables)...`);
     backupConnection = await getConnection(backupNode);
     
     const backupOptions = year === '2025'
@@ -552,7 +488,6 @@ const replicateDelete = async (orderNumber: string, year: '2024' | '2025') => {
 
     await executeDeleteTransaction(backupConnection, orderNumber, backupOptions);
   } catch (err: any) {
-    console.warn(`REPLICATE (DELETE): Failed to copy to Node ${backupNode}. Logging failure...`);
     await logReplicationFailure({
       target_node: backupNode,
       query_text: 'REPLICATE_DELETE_ORDER',
