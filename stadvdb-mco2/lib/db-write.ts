@@ -331,65 +331,52 @@ export const executeWriteTransaction = async (
   }
 };
 
+// Helper to normalize items for comparison (Sort by Product ID)
+const normalizeItems = (items: any[]) => {
+  if (!items) return [];
+  return items.map(i => ({
+    pid: String(i.productNumber || i.ProductId), 
+    qty: Number(i.quantity)
+  })).sort((a, b) => a.pid.localeCompare(b.pid));
+};
+
 export const executeUpdateTransaction = async (
   connection: Connection,
   orderNumber: string, 
-  orderData: OrderFormData,
+  orderData: OrderFormData & { originalItems?: any[] }, 
   totalAmount: number,
   options: TableOptions = {}
 ) => {
-  const { 
-    ordersTable = 'Orders', 
-    itemsTable = 'OrderItems', 
-    productsTable = 'Products' 
-  } = options;
+  const { ordersTable = 'Orders', itemsTable = 'OrderItems', productsTable = 'Products' } = options;
 
   try {
     await connection.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;');
     await connection.beginTransaction();
-
-    const productNumbers = orderData.items.map(item => item.productNumber);
-    const placeholders = productNumbers.map(() => '?').join(',');
-    await connection.execute(
-      `SELECT 1 FROM ${productsTable} WHERE id IN (${placeholders}) FOR SHARE`,
-      productNumbers
-    );
     
-    const [rows] = await connection.execute(
-      `SELECT 1 FROM ${ordersTable} WHERE orderNumber = ? FOR UPDATE`,
+    //  LOCK THE ORDER EXCLUSIVELY
+    const [rows] = await connection.execute<any[]>(
+      `SELECT id FROM ${ordersTable} WHERE orderNumber = ? FOR UPDATE`,
       [orderNumber]
     );
-    if ((rows as any[]).length === 0) throw new Error(`Order ${orderNumber} not found.`);
+    if (rows.length === 0) throw new Error(`Order ${orderNumber} not found.`);
+    const orderId = rows[0].id;
 
-    const year = new Date(orderData.deliveryDate).getFullYear() >= 2025 ? '2025' : '2024';
-    const hardcodedUser = getUserByYear(year);
-    const hardcodedRider = getRiderByYear(year);
-    await connection.execute(
-      `UPDATE ${ordersTable} SET
-         userId = ?,
-         deliveryRiderId = ?,
-         deliveryDate = ?,
-         updatedAt = ?
-       WHERE orderNumber = ?`,
-      [hardcodedUser.id, hardcodedRider.id, orderData.deliveryDate, new Date(), orderNumber]
-    );
+    // OPTIMISTIC LOCK CHECK (Value-Based)
+    if (orderData.originalItems) {
+        // Fetch what is CURRENTLY in the database right now
+        const [currentDbItems] = await connection.execute<any[]>(
+            `SELECT ProductId, quantity FROM ${itemsTable} WHERE OrderId = ?`,
+            [orderId]
+        );
 
-    const [orderRows] = await connection.execute(
-      `SELECT id FROM ${ordersTable} WHERE orderNumber = ?`,
-      [orderNumber]
-    );
-    const orderId = (orderRows as any[])[0]?.id;
+        // Compare what user saw vs what is in DB
+        const dbState = JSON.stringify(normalizeItems(currentDbItems));
+        const userState = JSON.stringify(normalizeItems(orderData.originalItems));
 
-    await connection.execute(
-      `DELETE FROM ${itemsTable} WHERE OrderId = ?`,
-      [orderId]
-    );
-    
-    for (const item of orderData.items) {
-      await connection.execute(
-        `INSERT INTO ${itemsTable} (OrderId, ProductId, quantity, notes, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
-        [orderId, item.productNumber, item.quantity, null, new Date(), new Date()]
-      );
+        if (dbState !== userState) {
+            // Mismatch! 
+            throw new Error("LOST UPDATE DETECTED: This order was modified by another user while you were editing. Please refresh.");
+        }
     }
 
     await connection.commit();
