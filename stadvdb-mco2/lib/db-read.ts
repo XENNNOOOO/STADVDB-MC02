@@ -29,11 +29,73 @@ const parseOrderItems = (rows: any[]): Order[] => {
   });
 };
 
+const getUnionQuery = (
+  tables1: { orders: string, items: string, products: string },
+  tables2: { orders: string, items: string, products: string } | null,
+  yearFilter: string | null,
+  limit: number,
+  offset: number
+) => {
+  const buildSelect = (t: { orders: string, items: string, products: string }) => `
+    SELECT
+      o.orderNumber as ORDER_NUMBER,
+      o.userId as CUSTOMER_NUMBER,
+      o.deliveryRiderId as DELIVERY_RIDER_ID,
+      o.createdAt as ORDER_DATE,
+      o.deliveryDate as DELIVERY_DATE,
+      COALESCE(SUM(oi.quantity * p.price), 0) as TOTAL_AMOUNT,
+      JSON_ARRAYAGG(
+        JSON_OBJECT(
+          'productNumber', p.id,
+          'productName', p.name,
+          'quantity', oi.quantity,
+          'unitPrice', p.price
+        )
+      ) as items
+    FROM ${t.orders} o
+    LEFT JOIN ${t.items} oi ON o.id = oi.OrderId
+    LEFT JOIN ${t.products} p ON oi.ProductId = p.id
+    ${yearFilter ? `WHERE YEAR(o.deliveryDate) = '${yearFilter}'` : ''}
+    GROUP BY o.id, o.orderNumber, o.userId, o.deliveryRiderId, o.createdAt, o.deliveryDate
+  `;
+
+  if (!tables2) {
+    return `${buildSelect(tables1)} ORDER BY DELIVERY_DATE DESC LIMIT ${limit} OFFSET ${offset}`;
+  }
+
+  return `
+    SELECT * FROM (
+      ${buildSelect(tables1)}
+      UNION ALL
+      ${buildSelect(tables2)}
+    ) as combined_results
+    ORDER BY DELIVERY_DATE DESC
+    LIMIT ${limit} OFFSET ${offset}
+  `;
+};
+
+const getUnionCountQuery = (
+  tables1: { orders: string, items: string, products: string },
+  tables2: { orders: string, items: string, products: string } | null,
+  yearFilter: string | null
+) => {
+  const q1 = `SELECT COUNT(DISTINCT id) as cnt FROM ${tables1.orders} ${yearFilter ? `WHERE YEAR(deliveryDate) = '${yearFilter}'` : ''}`;
+  
+  if (!tables2) {
+    return `SELECT (${q1}) as total_count`;
+  }
+
+  const q2 = `SELECT COUNT(DISTINCT id) as cnt FROM ${tables2.orders} ${yearFilter ? `WHERE YEAR(deliveryDate) = '${yearFilter}'` : ''}`;
+  return `SELECT ((${q1}) + (${q2})) as total_count`;
+};
+
 export const getAllOrders = async (
   limit?: number,
   offset?: number
 ): Promise<{ orders: Order[], total: number }> => {
   const readPath: NodeName[] = ['central', 'node1', 'node2'];
+  const actualLimit = limit || 50;
+  const actualOffset = offset || 0;
   
   let connection: Connection | undefined;
 
@@ -41,46 +103,29 @@ export const getAllOrders = async (
     try {
       console.log(`READ [ALL]: Trying Node ${node}...`);
       connection = await getConnection(node);
-
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
 
+      let tablesMain = { orders: 'Orders', items: 'OrderItems', products: 'Products' };
+      let tablesBackup = null;
+
+      if (node === 'node1') {
+        tablesBackup = { orders: 'Orders_2024Backup', items: 'OrderItems_2024Backup', products: 'Products_2024Backup' };
+      } else if (node === 'node2') {
+        tablesBackup = { orders: 'Orders_2025Backup', items: 'OrderItems_2025Backup', products: 'Products_2025Backup' };
+      }
+
       const [countResult] = await connection.execute<RowDataPacket[]>(
-        `SELECT COUNT(DISTINCT id) as total_count FROM Orders`
+        getUnionCountQuery(tablesMain, tablesBackup, null)
       );
       const total = countResult[0].total_count;
 
-      const actualLimit = limit || 50;
-      const actualOffset = offset || 0;
-
       const [rows] = await connection.execute<RowDataPacket[]>(
-        `SELECT
-            o.orderNumber as ORDER_NUMBER,
-            o.userId as CUSTOMER_NUMBER,
-            o.deliveryRiderId as DELIVERY_RIDER_ID,
-            o.createdAt as ORDER_DATE,
-            o.deliveryDate as DELIVERY_DATE,
-            COALESCE(SUM(oi.quantity * p.price), 0) as TOTAL_AMOUNT,
-            JSON_ARRAYAGG(
-              JSON_OBJECT(
-                'productNumber', p.id,
-                'productName', p.name,
-                'quantity', oi.quantity,
-                'unitPrice', p.price
-              )
-            ) as items
-         FROM Orders o
-         LEFT JOIN OrderItems oi ON o.id = oi.OrderId
-         LEFT JOIN Products p ON oi.ProductId = p.id
-         GROUP BY o.id, o.orderNumber, o.userId, o.deliveryRiderId, o.createdAt, o.deliveryDate
-         ORDER BY o.deliveryDate DESC
-         LIMIT ${actualLimit} OFFSET ${actualOffset}`
+        getUnionQuery(tablesMain, tablesBackup, null, actualLimit, actualOffset)
       );
 
       await connection.end();
       console.log(`READ [ALL]: Success on Node ${node}. Fetched ${rows.length} orders.`);
-
       const orders = parseOrderItems(rows);
-
       return { orders, total };
 
     } catch (err: any) {
@@ -102,57 +147,38 @@ export const getOrdersByYear = async (
       ? ['node1', 'central', 'node2']
       : ['node2', 'central', 'node1'];
 
+  const actualLimit = limit || 50;
+  const actualOffset = offset || 0;
+
   let connection: Connection | undefined;
 
   for (const node of readPath) {
     try {
       console.log(`READ [${year}]: Trying Node ${node}...`);
       connection = await getConnection(node);
-
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
 
+      let targetTables = { orders: 'Orders', items: 'OrderItems', products: 'Products' };
+
+      if (node === 'node1' && year === '2024') {
+        targetTables = { orders: 'Orders_2024Backup', items: 'OrderItems_2024Backup', products: 'Products_2024Backup' };
+      } else if (node === 'node2' && year === '2025') {
+        targetTables = { orders: 'Orders_2025Backup', items: 'OrderItems_2025Backup', products: 'Products_2025Backup' };
+      }
+
       const [countResult] = await connection.execute<RowDataPacket[]>(
-        `SELECT COUNT(DISTINCT o.id) as total_count
-         FROM Orders o
-         WHERE YEAR(o.deliveryDate) = ?`,
+        `SELECT COUNT(DISTINCT id) as total_count FROM ${targetTables.orders} WHERE YEAR(deliveryDate) = ?`,
         [year]
       );
       const total = countResult[0].total_count;
 
-      const actualLimit = limit || 50;
-      const actualOffset = offset || 0;
-
       const [rows] = await connection.execute<RowDataPacket[]>(
-        `SELECT
-            o.orderNumber as ORDER_NUMBER,
-            o.userId as CUSTOMER_NUMBER,
-            o.deliveryRiderId as DELIVERY_RIDER_ID,
-            o.createdAt as ORDER_DATE,
-            o.deliveryDate as DELIVERY_DATE,
-            COALESCE(SUM(oi.quantity * p.price), 0) as TOTAL_AMOUNT,
-            JSON_ARRAYAGG(
-              JSON_OBJECT(
-                'productNumber', p.id,
-                'productName', p.name,
-                'quantity', oi.quantity,
-                'unitPrice', p.price
-              )
-            ) as items
-         FROM Orders o
-         LEFT JOIN OrderItems oi ON o.id = oi.OrderId
-         LEFT JOIN Products p ON oi.ProductId = p.id
-         WHERE YEAR(o.deliveryDate) = ?
-         GROUP BY o.id, o.orderNumber, o.userId, o.deliveryRiderId, o.createdAt, o.deliveryDate
-         ORDER BY o.deliveryDate DESC
-         LIMIT ${actualLimit} OFFSET ${actualOffset}`,
-        [year]
+        getUnionQuery(targetTables, null, year, actualLimit, actualOffset)
       );
 
       await connection.end();
       console.log(`READ [${year}]: Success on Node ${node}. Fetched ${rows.length} orders.`);
-
       const orders = parseOrderItems(rows);
-
       return { orders, total };
 
     } catch (err: any) {
@@ -164,10 +190,6 @@ export const getOrdersByYear = async (
   throw new Error(`All nodes for ${year} data are unavailable.`);
 };
 
-/**
- * READ (Single Order)
- * Uses READ COMMITTED + FOR SHARE to ensure we block if a Write Lock is active.
- */
 export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<any | null> => {
   const readPath: NodeName[] =
     year === '2025'
@@ -180,59 +202,69 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
     try {
       console.log(`READ [${id}]: Trying Node ${node}...`);
       connection = await getConnection(node);
-      
-      // Read Committed
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED;');
 
-      // Lock: 'FOR UPDATE' 
-      const [rows]: any[] = await connection.execute(
-        `SELECT
-           o.orderNumber,
-           o.userId,
-           o.deliveryRiderId, 
-           o.deliveryDate,
-           o.createdAt,
-           oi.quantity,
-           p.name as productName,
-           p.price as unitPrice,
-           p.id as productNumber
-         FROM Orders o
-         LEFT JOIN OrderItems oi ON o.id = oi.OrderId
-         LEFT JOIN Products p ON oi.ProductId = p.id
-         WHERE o.orderNumber = ?
-         FOR UPDATE`, 
-        [id]
-      );
+      let tablesToCheck = [{ orders: 'Orders', items: 'OrderItems', products: 'Products' }];
+      
+      if (node === 'node1') {
+        tablesToCheck.push({ orders: 'Orders_2024Backup', items: 'OrderItems_2024Backup', products: 'Products_2024Backup' });
+      } else if (node === 'node2') {
+        tablesToCheck.push({ orders: 'Orders_2025Backup', items: 'OrderItems_2025Backup', products: 'Products_2025Backup' });
+      }
 
-      await connection.end();
-      if (rows.length === 0) continue;
+      for (const t of tablesToCheck) {
+        const [rows]: any[] = await connection.execute(
+          `SELECT
+             o.orderNumber,
+             o.userId,
+             o.deliveryRiderId, 
+             o.deliveryDate,
+             o.createdAt,
+             oi.quantity,
+             p.name as productName,
+             p.price as unitPrice,
+             p.id as productNumber
+           FROM ${t.orders} o
+           LEFT JOIN ${t.items} oi ON o.id = oi.OrderId
+           LEFT JOIN ${t.products} p ON oi.ProductId = p.id
+           WHERE o.orderNumber = ?
+           FOR UPDATE`, 
+          [id]
+        );
 
-      console.log(`READ [${id}]: Found on Node ${node}. Parsing...`);
+        if (rows.length > 0) {
+          await connection.end();
+          console.log(`READ [${id}]: Found on Node ${node} in table ${t.orders}. Parsing...`);
 
-      const order = {
-        orderNumber: rows[0].orderNumber,
-        customerNumber: rows[0].userId,
-        deliveryRiderId: rows[0].deliveryRiderId, 
-        orderDate: rows[0].createdAt,
-        deliveryDate: rows[0].deliveryDate,
-        totalAmount: 0,
-        items: [] as any[]
-      };
+          const order = {
+            orderNumber: rows[0].orderNumber,
+            customerNumber: rows[0].userId,
+            deliveryRiderId: rows[0].deliveryRiderId, 
+            orderDate: rows[0].createdAt,
+            deliveryDate: rows[0].deliveryDate,
+            totalAmount: 0,
+            items: [] as any[]
+          };
 
-      rows.forEach((row: any) => {
-        if (row.productName) {
-          const lineTotal = row.quantity * row.unitPrice;
-          order.totalAmount += lineTotal;
-          order.items.push({
-            productNumber: row.productNumber,
-            productName: row.productName,
-            quantity: row.quantity,
-            unitPrice: row.unitPrice,
-            lineTotal: lineTotal
+          rows.forEach((row: any) => {
+            if (row.productName) {
+              const lineTotal = row.quantity * row.unitPrice;
+              order.totalAmount += lineTotal;
+              order.items.push({
+                productNumber: row.productNumber,
+                productName: row.productName,
+                quantity: row.quantity,
+                unitPrice: row.unitPrice,
+                lineTotal: lineTotal
+              });
+            }
           });
+          return order;
         }
-      });
-      return order;
+      }
+      
+      await connection.end();
+
     } catch (err: any) {
       console.warn(`READ: Node ${node} failed. (${err.message}). skipping...`);
       if (connection) await connection.end();
@@ -254,9 +286,16 @@ export const getProducts = async (year: '2024' | '2025'): Promise<Product[]> => 
       console.log(`READ [Products, context=${year}]: Trying Node ${node}...`);
       connection = await getConnection(node);
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
-      const [rows] = await connection.execute(
-        `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE FROM Products`
-      );
+      
+      let query = `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE FROM Products`;
+      
+      if (node === 'node1' && year === '2024') {
+        query = `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE FROM Products_2024Backup`;
+      } else if (node === 'node2' && year === '2025') {
+        query = `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE FROM Products_2025Backup`;
+      }
+
+      const [rows] = await connection.execute(query);
       await connection.end();
       return rows as Product[];
     } catch (err: any) {
@@ -276,13 +315,25 @@ export const getAllProducts = async (): Promise<Product[]> => {
     try {
       console.log(`READ [Products, ALL]: Trying Node ${node}...`);
       connection = await getConnection(node);
-      
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;');
       
-      const [rows] = await connection.execute(
-        `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE 
-         FROM Products`
-      );
+      let query = `SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE FROM Products`;
+
+      if (node === 'node1') {
+        query = `
+          SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE FROM Products
+          UNION
+          SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE FROM Products_2024Backup
+        `;
+      } else if (node === 'node2') {
+        query = `
+          SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE FROM Products
+          UNION
+          SELECT id as PRODUCT_NUMBER, name as PRODUCT_NAME, price as UNIT_PRICE FROM Products_2025Backup
+        `;
+      }
+
+      const [rows] = await connection.execute(query);
       
       await connection.end();
       console.log(`READ [Products, ALL]: Success on Node ${node}.`);
