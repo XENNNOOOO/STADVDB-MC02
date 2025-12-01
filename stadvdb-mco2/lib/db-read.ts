@@ -61,7 +61,7 @@ const fetchOrdersFromNode = async (
        LEFT JOIN ${itemsTable} oi ON o.id = oi.OrderId
        LEFT JOIN ${productsTable} p ON oi.ProductId = p.id
        GROUP BY o.id, o.orderNumber, o.userId, o.deliveryRiderId, o.createdAt, o.deliveryDate
-       ORDER BY o.createdAt DESC`
+       ORDER BY o.deliveryDate DESC`
     );
 
     await connection.end();
@@ -105,7 +105,7 @@ export const getAllOrders = async (
        LEFT JOIN OrderItems oi ON o.id = oi.OrderId
        LEFT JOIN Products p ON oi.ProductId = p.id
        GROUP BY o.id, o.orderNumber, o.userId, o.deliveryRiderId, o.createdAt, o.deliveryDate
-       ORDER BY o.createdAt DESC
+       ORDER BY o.deliveryDate DESC
        LIMIT ${limit} OFFSET ${offset}`
     );
 
@@ -137,7 +137,8 @@ export const getAllOrders = async (
 
   const allOrders = [...orders2025, ...orders2024];
   
-  allOrders.sort((a, b) => new Date(b.ORDER_DATE).getTime() - new Date(a.ORDER_DATE).getTime());
+  // Sort by Delivery Date DESC
+  allOrders.sort((a, b) => new Date(b.DELIVERY_DATE).getTime() - new Date(a.DELIVERY_DATE).getTime());
 
   const paginatedOrders = allOrders.slice(offset, offset + limit);
 
@@ -189,7 +190,8 @@ export const getOrdersByYear = async (
          LEFT JOIN Products p ON oi.ProductId = p.id
          WHERE YEAR(o.deliveryDate) = ? 
          GROUP BY o.id, o.orderNumber, o.userId, o.deliveryRiderId, o.createdAt, o.deliveryDate
-         ORDER BY o.createdAt DESC LIMIT ? OFFSET ?`,
+         ORDER BY o.deliveryDate DESC 
+         LIMIT ? OFFSET ?`,
          [year, limit, offset]
     );
     await conn.end();

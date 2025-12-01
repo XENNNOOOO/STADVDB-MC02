@@ -5,7 +5,7 @@ import type { NodeName } from './types';
 
 // Node 0 (Server 0) - Master, All Data
 const node0_Central_Config: mysql.ConnectionOptions = {
-  host: '10.2.14.135', // localhost via SSH tunnel
+  host: '127.0.0.1', // localhost via SSH tunnel
   port: 3306, // tunneled from Server0
   user: 'app_user',
   password: 'xACmJk5u4QNK3ESHvW7XrpFg@123',
@@ -15,8 +15,8 @@ const node0_Central_Config: mysql.ConnectionOptions = {
 
 // Node 1 (Server 1) - 2025 (Primary) + 2024 (Backup)
 const node1_Config: mysql.ConnectionOptions = {
-  host: '10.2.14.136', // localhost via SSH tunnel
-  port: 3306, // tunneled from Server1
+  host: '127.0.0.1', // localhost via SSH tunnel
+  port: 3307, // tunneled from Server1
   user: 'app_user',
   password: 'xACmJk5u4QNK3ESHvW7XrpFg@123',
   database: 'node1',
@@ -25,8 +25,8 @@ const node1_Config: mysql.ConnectionOptions = {
 
 // Node 2 (Server 2) - 2024 (Primary) + 2025 (Backup)
 const node2_Config: mysql.ConnectionOptions = {
-  host: '10.2.14.137', // localhost via SSH tunnel
-  port: 3306, // tunneled from Server2
+  host: '127.0.0.1', // localhost via SSH tunnel
+  port: 3308, // tunneled from Server2
   user: 'app_user',
   password: 'xACmJk5u4QNK3ESHvW7XrpFg@123',
   database: 'node2',
