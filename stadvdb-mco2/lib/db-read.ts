@@ -72,7 +72,7 @@ export const getAllOrders = async (
          LEFT JOIN OrderItems oi ON o.id = oi.OrderId
          LEFT JOIN Products p ON oi.ProductId = p.id
          GROUP BY o.id, o.orderNumber, o.userId, o.deliveryRiderId, o.createdAt, o.deliveryDate
-         ORDER BY o.createdAt DESC
+         ORDER BY o.deliveryDate DESC
          LIMIT ${actualLimit} OFFSET ${actualOffset}`
       );
 
@@ -143,7 +143,7 @@ export const getOrdersByYear = async (
          LEFT JOIN Products p ON oi.ProductId = p.id
          WHERE YEAR(o.deliveryDate) = ?
          GROUP BY o.id, o.orderNumber, o.userId, o.deliveryRiderId, o.createdAt, o.deliveryDate
-         ORDER BY o.createdAt DESC
+         ORDER BY o.deliveryDate DESC
          LIMIT ${actualLimit} OFFSET ${actualOffset}`,
         [year]
       );
