@@ -7,15 +7,13 @@ import Link from 'next/link';
 import OrderForm from '@/app/components/OrderForm';
 
 interface Order {
-  ORDER_NUMBER: string;
-  CUSTOMER_NUMBER: string;
-  ORDER_DATE: string;
-  DELIVERY_DATE: string;
-  DELIVERY_RIDER_ID?: string;
-  TOTAL_AMOUNT: number;
+  orderNumber: string;
+  customerNumber: string;
+  orderDate: string;
+  deliveryDate: string;
+  deliveryRiderId?: string;
+  totalAmount: number;
   items?: any[];
-  NODE_ACCESSED?: string;
-  FAILOVER_PATH?: string[];
 }
 
 interface Product {
@@ -159,7 +157,7 @@ export default function EditOrderPage() {
 
   // Prepare initial form data
   const initialFormData = order ? {
-    deliveryDate: order.DELIVERY_DATE ? new Date(order.DELIVERY_DATE).toISOString().split('T')[0] : '',
+    deliveryDate: order.deliveryDate ? order.deliveryDate.split('T')[0] : '',
     items: order.items || [{ productNumber: '', quantity: 1 }],
   } : undefined;
 
@@ -190,8 +188,8 @@ export default function EditOrderPage() {
           error={error}
           submitLabel="Update Order"
           showCustomerInfo={true}
-          customerNumber={order?.CUSTOMER_NUMBER}
-          orderDate={order?.ORDER_DATE}
+          customerNumber={order?.customerNumber}
+          orderDate={order?.orderDate}
         />
 
         {/* Cancel Button */}

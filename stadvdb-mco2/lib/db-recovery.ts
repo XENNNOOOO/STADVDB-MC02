@@ -1,6 +1,6 @@
 import { getConnection } from './connections';
 import { executeWriteTransaction, executeUpdateTransaction, executeDeleteTransaction } from './db-write';
-import { getAllProducts } from './db-read';
+import { getAllProducts } from './db-read'; 
 import type { Connection, RowDataPacket } from 'mysql2/promise';
 import type { NodeName, OrderFormData, Product } from './types';
 
@@ -20,6 +20,13 @@ interface ReplicationLog {
   target_node: NodeName;
   query_text: string;
   query_params: string;
+}
+
+// Interface for dynamic table selection
+interface TableOptions {
+  ordersTable?: string;
+  itemsTable?: string;
+  productsTable?: string;
 }
 
 /**
@@ -57,15 +64,12 @@ export const runRecovery = async () => {
   return results;
 };
 
-/**
- * reads the PENDING_SYNC from a local node
- */
 const readPendingSyncLog = async (node: 'node1' | 'node2'): Promise<PendingSyncLog[]> => {
   let connection: Connection | undefined;
   try {
     console.log(`RECOVERY: Reading PENDING_SYNC from ${node}...`);
     connection = await getConnection(node);
-    const [rows] = await connection.execute('SELECT * FROM PENDING_SYNC');
+    const [rows] = await connection.execute('SELECT * FROM PENDING_SYNC WHERE status = "PENDING"');
     await connection.end();
     return rows as PendingSyncLog[];
   } catch (err: any) {
@@ -75,25 +79,21 @@ const readPendingSyncLog = async (node: 'node1' | 'node2'): Promise<PendingSyncL
   }
 };
 
-/**
- * clears a completed log from a PENDING_SYNC table
- */
-const clearPendingSyncLog = async (node: 'node1' | 'node2', log_id: number) => {
+const markPendingSyncComplete = async (node: 'node1' | 'node2', log_id: number) => {
   let connection: Connection | undefined;
   try {
     connection = await getConnection(node);
-    // Fixed Table Name & ID Column
-    await connection.execute('DELETE FROM PENDING_SYNC WHERE id = ?', [log_id]);
+    await connection.execute('UPDATE PENDING_SYNC SET status = "COMPLETED" WHERE id = ?', [log_id]);
     await connection.end();
   } catch (err: any) {
-    console.error(`RECOVERY: FAILED TO CLEAR PENDING_SYNC ${log_id} from ${node}.`, err.message);
+    console.error(`RECOVERY: FAILED TO MARK PENDING_SYNC ${log_id} COMPLETED from ${node}.`, err.message);
     if (connection) await connection.end();
   }
 };
 
 /**
- * processes all PENDING_SYNC logs from local nodes (1 & 2)
- * and syncs them back to the master (Node 0).
+ * SLAVE -> MASTER SYNC
+ * Always writes to 'Orders' table on Central Node (Node 0)
  */
 export const runPendingSync = async () => {
   let centralConnection: Connection | undefined;
@@ -101,7 +101,6 @@ export const runPendingSync = async () => {
     centralConnection = await getConnection('central');
     console.log("RECOVERY (SYNC): Connected to Node 0.");
 
-    // fetch all product prices first to calculate totals
     let productPriceMap = new Map<string, number>();
     try {
       const products: Product[] = await getAllProducts();
@@ -113,7 +112,6 @@ export const runPendingSync = async () => {
       throw new Error(`Could not load product prices. Recovery aborted: ${err.message}`);
     }
 
-    // check both replica nodes for pending logs
     const nodesToCheck: NodeName[] = ['node1', 'node2'];
     let totalSynced = 0;
 
@@ -123,17 +121,14 @@ export const runPendingSync = async () => {
 
       console.log(`RECOVERY (SYNC): Found ${logs.length} pending jobs on ${node}.`);
 
-      // loop through each log and write it to Node 0
       for (const log of logs) {
         try {
           const orderData = JSON.parse(log.order_data) as OrderFormData;
           const orderNumber = orderData.orderNumber;
 
-          // recalculate the total amount using the price map
           let totalAmount = 0;
           if (orderData.items) {
             for (const item of orderData.items) {
-                // Ensure productNumber is string for map lookup
                 const price = productPriceMap.get(String(item.productNumber));
                 if (price) {
                     totalAmount += price * item.quantity;
@@ -141,30 +136,25 @@ export const runPendingSync = async () => {
             }
           }
 
-          // check if this was a DELETE action
           if ((orderData as any)._action === 'DELETE') {
             console.log(`RECOVERY (SYNC): Re-running DELETE ${orderNumber} on Node 0...`);
             await executeDeleteTransaction(centralConnection, orderNumber);
           }
-          // check if this was an UPDATE action (or create if exists)
-          else if (await orderExists(centralConnection, orderNumber)) {
+          // Node 0 always uses the standard 'Orders' table, so we check that
+          else if (await orderExists(centralConnection, orderNumber, 'Orders')) {
             console.log(`RECOVERY (SYNC): Re-running UPDATE ${orderNumber} on Node 0...`);
             await executeUpdateTransaction(centralConnection, orderNumber, orderData, totalAmount);
           }
-          // else, it's a CREATE
           else {
             console.log(`RECOVERY (SYNC): Re-running CREATE ${orderNumber} on Node 0...`);
             await executeWriteTransaction(centralConnection, orderNumber, orderData, totalAmount);
           }
 
-          // if successful, clear the log from the local node
-          // Log ID is mapped from 'id' in DB
-          await clearPendingSyncLog(node as 'node1' | 'node2', log.id);
+          await markPendingSyncComplete(node as 'node1' | 'node2', log.id);
           totalSynced++;
 
         } catch (jobErr: any) {
           console.error(`RECOVERY (SYNC): FAILED to process job ${log.id} from ${node}.`, jobErr.message);
-          // we don't clear the log, so it will be retried next time.
         }
       }
     }
@@ -180,15 +170,14 @@ export const runPendingSync = async () => {
 };
 
 /**
- * processes all REPLICATION_LOG jobs from Node 0
- * and re-replicates them to the failed replica nodes (1 & 2).
+ * MASTER -> SLAVE REPLICATION
+ * Must intelligently select Primary vs Backup tables
  */
 export const runReplicationLog = async () => {
   let centralConnection: Connection | undefined;
   let replicaConnection: Connection | undefined;
 
   try {
-    // get all pending replication tasks from Node 0
     centralConnection = await getConnection('central');
     console.log("RECOVERY (REPLICATE): Connected to Node 0.");
     const [logs] = await centralConnection.execute(
@@ -197,36 +186,62 @@ export const runReplicationLog = async () => {
 
     const pendingLogs = logs as ReplicationLog[];
     if (pendingLogs.length === 0) {
-      await centralConnection.end(); // Close connection early
+      await centralConnection.end();
       return { status: 'OK', message: 'No pending replications found.' };
     }
 
     console.log(`RECOVERY (REPLICATE): Found ${pendingLogs.length} pending replication jobs.`);
     let totalReplicated = 0;
 
-    // loop through each log and try to execute it
     for (const log of pendingLogs) {
       try {
         const targetNode = log.target_node as NodeName;
+        const queryParams = JSON.parse(log.query_params);
+        
+        // Extract deliveryDate to determine Year
+        // orderData is usually nested inside query_params for create/update
+        const orderData = queryParams.orderData || {}; 
+        const deliveryDate = orderData.deliveryDate || new Date().toISOString(); 
+        
+        const year = new Date(deliveryDate).getFullYear() >= 2025 ? '2025' : '2024';
 
-        // connect to the (now online) replica node
+        // --- DYNAMIC TABLE LOGIC ---
+        // Determine if we are writing to Primary or Backup tables on the target node
+        let tableOptions: TableOptions = { ordersTable: 'Orders', itemsTable: 'OrderItems', productsTable: 'Products' };
+        
+        if (year === '2025' && targetNode === 'node2') {
+            // 2025 data on Node 2 -> Backup Tables
+            tableOptions = { ordersTable: 'Orders_2025Backup', itemsTable: 'OrderItems_2025Backup', productsTable: 'Products_2025Backup' };
+        } else if (year === '2024' && targetNode === 'node1') {
+            // 2024 data on Node 1 -> Backup Tables
+            tableOptions = { ordersTable: 'Orders_2024Backup', itemsTable: 'OrderItems_2024Backup', productsTable: 'Products_2024Backup' };
+        }
+        
+        const targetTable = tableOptions.ordersTable || 'Orders';
+        console.log(`RECOVERY (REPLICATE): Target ${targetNode} [${year}] -> Using table: ${targetTable}`);
+
         replicaConnection = await getConnection(targetNode);
 
-        // handle all 3 query types
         if (log.query_text === 'REPLICATE_CREATE_ORDER') {
-          const { orderNumber, orderData, totalAmount } = JSON.parse(log.query_params);
-          await executeWriteTransaction(replicaConnection, orderNumber, orderData, totalAmount);
+          const { orderNumber, orderData, totalAmount } = queryParams;
+          await executeWriteTransaction(replicaConnection, orderNumber, orderData, totalAmount, tableOptions);
         }
         else if (log.query_text === 'REPLICATE_UPDATE_ORDER') {
-          const { orderNumber, orderData, totalAmount } = JSON.parse(log.query_params);
-          await executeUpdateTransaction(replicaConnection, orderNumber, orderData, totalAmount);
+          const { orderNumber, orderData, totalAmount } = queryParams;
+          
+          // Check existence in the CORRECT table
+          if (await orderExists(replicaConnection, orderNumber, targetTable)) {
+             await executeUpdateTransaction(replicaConnection, orderNumber, orderData, totalAmount, tableOptions);
+          } else {
+             console.warn(`RECOVERY (REPLICATE): Order ${orderNumber} missing in ${targetTable} on ${targetNode}. Converting UPDATE to CREATE.`);
+             await executeWriteTransaction(replicaConnection, orderNumber, orderData, totalAmount, tableOptions);
+          }
         }
         else if (log.query_text === 'REPLICATE_DELETE_ORDER') {
-          const { orderNumber } = JSON.parse(log.query_params);
-          await executeDeleteTransaction(replicaConnection, orderNumber);
+          const { orderNumber } = queryParams;
+          await executeDeleteTransaction(replicaConnection, orderNumber, tableOptions);
         }
 
-        // if successful, update the log on Node 0 to 'COMPLETED'
         await centralConnection.execute(
           "UPDATE REPLICATION_LOG SET status = 'COMPLETED' WHERE id = ?",
           [log.id]
@@ -236,7 +251,6 @@ export const runReplicationLog = async () => {
 
       } catch (jobErr: any) {
         console.warn(`RECOVERY (REPLICATE): FAILED to process job ${log.id} for ${log.target_node}.`, jobErr.message);
-        // we don't delete the log, it will be retried next time.
       } finally {
         if (replicaConnection) await replicaConnection.end();
       }
@@ -253,13 +267,13 @@ export const runReplicationLog = async () => {
 };
 
 /**
- * Helper function to check if an order already exists on Node 0.
- * Used by the sync recovery to decide between INSERT and UPDATE.
+ * Checks if an order exists in a specific table.
  */
-const orderExists = async (connection: Connection, orderNumber: string): Promise<boolean> => {
+const orderExists = async (connection: Connection, orderNumber: string, tableName: string = 'Orders'): Promise<boolean> => {
   try {
+    // Dynamic table name injection
     const [rows] = await connection.execute<RowDataPacket[]>(
-      'SELECT 1 FROM Orders WHERE orderNumber = ? LIMIT 1',
+      `SELECT 1 FROM ${tableName} WHERE orderNumber = ? LIMIT 1`,
       [orderNumber]
     );
     return (rows as any[]).length > 0;
