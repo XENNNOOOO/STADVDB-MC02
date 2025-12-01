@@ -34,7 +34,7 @@ const fetchPendingSyncLogs = async (): Promise<RecoveryLog[]> => {
 
       for (const row of rows) {
         logs.push({
-          id: `sync-${name}-${row.log_id}`,
+          id: `sync-${name}-${row.id}`,
           timestamp: new Date(row.created_at || Date.now()).toLocaleString(),
           type: 'sync',
           status: 'pending',
@@ -75,14 +75,31 @@ const fetchReplicationLogs = async (): Promise<RecoveryLog[]> => {
 
     for (const row of rows) {
       const targetNode = row.target_node === 'node1' ? 'Node 1' : 'Node 2';
-      const status = row.status === 'FAILED' ? 'error' : 'pending';
+      let status: 'success' | 'error' | 'pending';
+
+      if (row.status === 'FAILED') {
+        status = 'error';
+      } else if (row.status === 'COMPLETED') {
+        status = 'success';
+      } else {
+        status = 'pending';
+      }
+
+      let message: string;
+      if (status === 'error') {
+        message = `Failed replication to ${targetNode}`;
+      } else if (status === 'success') {
+        message = `Completed replication to ${targetNode}`;
+      } else {
+        message = `Pending replication to ${targetNode}`;
+      }
 
       logs.push({
-        id: `replicate-${row.log_id}`,
+        id: `replicate-${row.id}`,
         timestamp: new Date(row.created_at || Date.now()).toLocaleString(),
         type: 'replicate',
         status,
-        message: `${status === 'error' ? 'Failed' : 'Pending'} replication to ${targetNode}`,
+        message,
         node: 'Central',
         details: `Query: ${row.query_text}`
       });
