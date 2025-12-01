@@ -184,8 +184,7 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
       // Read Committed
       await connection.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED;');
 
-      // Lock: 'FOR SHARE' 
-      // if an editor holds an X-Lock, this query will wait.
+      // Lock: 'FOR UPDATE' 
       const [rows]: any[] = await connection.execute(
         `SELECT
            o.orderNumber,
@@ -201,7 +200,7 @@ export const getOrderById = async (id: string, year: '2024' | '2025'): Promise<a
          LEFT JOIN OrderItems oi ON o.id = oi.OrderId
          LEFT JOIN Products p ON oi.ProductId = p.id
          WHERE o.orderNumber = ?
-         FOR SHARE`, 
+         FOR UPDATE`, 
         [id]
       );
 
