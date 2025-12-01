@@ -28,7 +28,7 @@ export default function RecoveryInitializer() {
           body: JSON.stringify({
             action: 'start',
             config: {
-              monitoringInterval: 30000, // 30 seconds
+              monitoringInterval: 60000, // 60 seconds
               healthCheckTimeout: 5000,  // 5 seconds
               enabled: true
             }

@@ -42,7 +42,7 @@ interface RecoveryStats {
 
 class RecoveryAutomation {
   private config: AutomationConfig = {
-    monitoringInterval: 30000, // 30 seconds
+    monitoringInterval: 60000, // 60 seconds
     healthCheckTimeout: 5000,  // 5 seconds
     enabled: true
   };
