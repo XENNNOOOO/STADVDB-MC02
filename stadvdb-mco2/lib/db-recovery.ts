@@ -58,41 +58,41 @@ export const runRecovery = async () => {
 };
 
 /**
- * reads the PENDING_SYNC_LOG from a local node
+ * reads the PENDING_SYNC from a local node
  */
 const readPendingSyncLog = async (node: 'node1' | 'node2'): Promise<PendingSyncLog[]> => {
   let connection: Connection | undefined;
   try {
-    console.log(`RECOVERY: Reading PENDING_SYNC_LOG from ${node}...`);
+    console.log(`RECOVERY: Reading PENDING_SYNC from ${node}...`);
     connection = await getConnection(node);
-    const [rows] = await connection.execute('SELECT * FROM PENDING_SYNC_LOG');
+    const [rows] = await connection.execute('SELECT * FROM PENDING_SYNC');
     await connection.end();
     return rows as PendingSyncLog[];
   } catch (err: any) {
-    console.warn(`RECOVERY: Could not read PENDING_SYNC_LOG from ${node}. It might be down.`, err.message);
+    console.warn(`RECOVERY: Could not read PENDING_SYNC from ${node}. It might be down.`, err.message);
     if (connection) await connection.end();
     return [];
   }
 };
 
 /**
- * clears a completed log from a PENDING_SYNC_LOG table
+ * clears a completed log from a PENDING_SYNC table
  */
 const clearPendingSyncLog = async (node: 'node1' | 'node2', log_id: number) => {
   let connection: Connection | undefined;
   try {
     connection = await getConnection(node);
     // Fixed Table Name & ID Column
-    await connection.execute('DELETE FROM PENDING_SYNC_LOG WHERE id = ?', [log_id]);
+    await connection.execute('DELETE FROM PENDING_SYNC WHERE id = ?', [log_id]);
     await connection.end();
   } catch (err: any) {
-    console.error(`RECOVERY: FAILED TO CLEAR PENDING_SYNC_LOG ${log_id} from ${node}.`, err.message);
+    console.error(`RECOVERY: FAILED TO CLEAR PENDING_SYNC ${log_id} from ${node}.`, err.message);
     if (connection) await connection.end();
   }
 };
 
 /**
- * processes all PENDING_SYNC_LOG logs from local nodes (1 & 2)
+ * processes all PENDING_SYNC logs from local nodes (1 & 2)
  * and syncs them back to the master (Node 0).
  */
 export const runPendingSync = async () => {
