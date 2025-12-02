@@ -39,6 +39,7 @@ export default function EditOrderPage() {
   const orderId = params.orderId as string;
 
   const [order, setOrder] = useState<Order | null>(null);
+  const [originalItems, setOriginalItems] = useState<any[] | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -76,6 +77,8 @@ export default function EditOrderPage() {
         }
 
         setOrder(orderResult.data);
+        // Capture original items snapshot for lost update detection
+        setOriginalItems(orderResult.data.items || []);
         setProducts(productsResult.data);
 
       } catch (err: any) {
@@ -101,7 +104,9 @@ export default function EditOrderPage() {
         items: formData.items.map((item: any) => ({
           productNumber: item.productNumber,
           quantity: item.quantity
-        }))
+        })),
+        // Include original items snapshot for lost update detection
+        originalItems: originalItems
       };
 
       const response = await fetch(`/api/orders/${orderId}`, {

@@ -374,9 +374,44 @@ export const executeUpdateTransaction = async (
         const userState = JSON.stringify(normalizeItems(orderData.originalItems));
 
         if (dbState !== userState) {
-            // Mismatch! 
+            // Mismatch!
             throw new Error("LOST UPDATE DETECTED: This order was modified by another user while you were editing. Please refresh.");
         }
+    }
+
+    // Validate products exist
+    const productNumbers = orderData.items.map(item => item.productNumber);
+    const placeholders = productNumbers.map(() => '?').join(',');
+    await connection.execute(
+      `SELECT 1 FROM ${productsTable} WHERE id IN (${placeholders}) FOR SHARE`,
+      productNumbers
+    );
+
+    // Update the order information
+    const year = new Date(orderData.deliveryDate).getFullYear() >= 2025 ? '2025' : '2024';
+    const hardcodedUser = getUserByYear(year);
+    const hardcodedRider = getRiderByYear(year);
+    await connection.execute(
+      `UPDATE ${ordersTable} SET
+         userId = ?,
+         deliveryRiderId = ?,
+         deliveryDate = ?,
+         updatedAt = ?
+       WHERE orderNumber = ?`,
+      [hardcodedUser.id, hardcodedRider.id, orderData.deliveryDate, new Date(), orderNumber]
+    );
+
+    // Update the order items - delete existing and insert new ones
+    await connection.execute(
+      `DELETE FROM ${itemsTable} WHERE OrderId = ?`,
+      [orderId]
+    );
+
+    for (const item of orderData.items) {
+      await connection.execute(
+        `INSERT INTO ${itemsTable} (OrderId, ProductId, quantity, notes, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`,
+        [orderId, item.productNumber, item.quantity, null, new Date(), new Date()]
+      );
     }
 
     await connection.commit();

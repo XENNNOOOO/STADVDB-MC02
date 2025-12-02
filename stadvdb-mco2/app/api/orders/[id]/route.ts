@@ -75,11 +75,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    const orderData: OrderFormData = {
+    const orderData: OrderFormData & { originalItems?: any[] } = {
       orderNumber: id, // Use the ID from the URL
       customerNumber: body.customerNumber,
       deliveryDate: body.deliveryDate,
-      items: body.items
+      items: body.items,
+      // Include original items snapshot for lost update detection
+      originalItems: body.originalItems
     };
 
     console.log(`API: PUT /api/orders/${id} - Updating order with Primary→Failover→Emergency logic...`);
@@ -131,6 +133,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json(
         createErrorResponse('Invalid order data', error.message),
         { status: 400 }
+      );
+    }
+
+    if (error.message.includes('LOST UPDATE DETECTED')) {
+      return NextResponse.json(
+        createErrorResponse('Order was modified by another user', error.message),
+        { status: 409 } // Conflict
       );
     }
 
