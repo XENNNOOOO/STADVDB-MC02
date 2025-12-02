@@ -24,7 +24,7 @@ const parseOrderItems = (rows: any[]): Order[] => {
       DELIVERY_DATE: row.DELIVERY_DATE,
       DELIVERY_RIDER_ID: row.DELIVERY_RIDER_ID,
       TOTAL_AMOUNT: row.TOTAL_AMOUNT || 0,
-      items: cleanItems 
+      items: cleanItems
     } as unknown as Order;
   });
 };
